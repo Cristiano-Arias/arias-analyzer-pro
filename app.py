@@ -11,7 +11,6 @@ import io
 import re
 from datetime import datetime
 from collections import defaultdict
-import gc  # Garbage collector para liberação de memória
 
 app = Flask(__name__)
 CORS(app)
@@ -22,7 +21,7 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # Reduzido para 20MB
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
 # HTML da interface (mantém o mesmo)
 HTML_TEMPLATE = '''
@@ -554,427 +553,536 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-def extract_text_from_file_optimized(file_path):
-    """Extrai texto de forma otimizada para memória"""
+def extract_text_from_file(file_path):
+    """Extrai texto de diferentes tipos de arquivo, incluindo Excel"""
     try:
         file_extension = os.path.splitext(file_path)[1].lower()
         
         if file_extension == '.pdf':
-            return extract_pdf_optimized(file_path)
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                text = ""
+                for page in pdf_reader.pages:
+                    text += page.extract_text() + "\n"
+                return text
+        
         elif file_extension in ['.doc', '.docx']:
-            return extract_docx_optimized(file_path)
-        elif file_extension in ['.xls', '.xlsx']:
-            return extract_excel_optimized(file_path)
+            doc = docx.Document(file_path)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text
+        
         elif file_extension == '.txt':
-            return extract_txt_optimized(file_path)
+            with open(file_path, 'r', encoding='utf-8') as file:
+                return file.read()
+        
+        elif file_extension in ['.xls', '.xlsx']:
+            # Processar arquivo Excel
+            return extract_excel_data(file_path)
+        
         elif file_extension == '.zip':
-            return extract_zip_optimized(file_path)
+            # Para arquivos ZIP, extrair e processar cada arquivo
+            extracted_text = ""
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                temp_dir = tempfile.mkdtemp()
+                zip_ref.extractall(temp_dir)
+                
+                for root, dirs, files in os.walk(temp_dir):
+                    for file in files:
+                        file_path_in_zip = os.path.join(root, file)
+                        try:
+                            extracted_text += extract_text_from_file(file_path_in_zip) + "\n\n"
+                        except:
+                            continue
+            
+            return extracted_text
+        
         else:
-            return "Formato não suportado"
+            return "Formato de arquivo não suportado para extração de texto."
     
     except Exception as e:
-        return f"Erro na extração: {str(e)}"
+        return f"Erro ao extrair texto: {str(e)}"
 
-def extract_pdf_optimized(file_path):
-    """Extração otimizada de PDF"""
-    text_chunks = []
+def extract_excel_data(file_path):
+    """Extrai dados estruturados de arquivos Excel"""
     try:
-        with open(file_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            total_pages = len(pdf_reader.pages)
-            
-            # Processar em lotes para economizar memória
-            batch_size = 5  # Processar 5 páginas por vez
-            
-            for i in range(0, total_pages, batch_size):
-                batch_text = ""
-                end_page = min(i + batch_size, total_pages)
-                
-                for page_num in range(i, end_page):
-                    try:
-                        page = pdf_reader.pages[page_num]
-                        page_text = page.extract_text()
-                        batch_text += page_text + "\n"
-                        # Limpar referência da página
-                        del page
-                    except:
-                        continue
-                
-                # Adicionar texto do lote e limpar variável
-                if batch_text.strip():
-                    text_chunks.append(batch_text)
-                del batch_text
-                
-                # Forçar garbage collection a cada lote
-                gc.collect()
+        # Carregar o workbook
+        wb = openpyxl.load_workbook(file_path)
+        extracted_data = {
+            'sheets': wb.sheetnames,
+            'data': {}
+        }
         
-        # Combinar chunks e limpar lista
-        full_text = "\n".join(text_chunks)
-        del text_chunks
-        gc.collect()
-        
-        return full_text
-        
-    except Exception as e:
-        return f"Erro PDF: {str(e)}"
-
-def extract_docx_optimized(file_path):
-    """Extração otimizada de DOCX"""
-    try:
-        doc = docx.Document(file_path)
-        text_parts = []
-        
-        # Processar parágrafos em lotes
-        batch_size = 50
-        paragraphs = doc.paragraphs
-        
-        for i in range(0, len(paragraphs), batch_size):
-            batch_text = ""
-            end_idx = min(i + batch_size, len(paragraphs))
-            
-            for j in range(i, end_idx):
-                batch_text += paragraphs[j].text + "\n"
-            
-            text_parts.append(batch_text)
-            del batch_text
-            gc.collect()
-        
-        full_text = "\n".join(text_parts)
-        del text_parts, doc
-        gc.collect()
-        
-        return full_text
-        
-    except Exception as e:
-        return f"Erro DOCX: {str(e)}"
-
-def extract_txt_optimized(file_path):
-    """Extração otimizada de TXT"""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            # Ler em chunks para arquivos grandes
-            chunk_size = 8192
-            text_chunks = []
-            
-            while True:
-                chunk = file.read(chunk_size)
-                if not chunk:
-                    break
-                text_chunks.append(chunk)
-            
-            full_text = "".join(text_chunks)
-            del text_chunks
-            gc.collect()
-            
-            return full_text
-            
-    except Exception as e:
-        return f"Erro TXT: {str(e)}"
-
-def extract_excel_optimized(file_path):
-    """Extração otimizada de Excel"""
-    try:
-        # Usar openpyxl com read_only para economizar memória
-        wb = openpyxl.load_workbook(file_path, read_only=True)
-        extracted_data = []
-        
-        # Processar apenas abas importantes
-        important_sheets = ['CARTA', 'Itens Serviços', 'Comp. Custo -GLOBAL', 'BDI']
-        sheets_to_process = [sheet for sheet in wb.sheetnames if any(imp in sheet for imp in important_sheets)]
-        
-        for sheet_name in sheets_to_process:
+        # Processar cada aba
+        for sheet_name in wb.sheetnames:
             try:
-                # Usar pandas com chunksize para economizar memória
-                df_chunks = pd.read_excel(file_path, sheet_name=sheet_name, chunksize=100)
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
                 
+                # Converter para texto estruturado
                 sheet_text = f"\n=== ABA: {sheet_name} ===\n"
                 
-                for chunk in df_chunks:
-                    # Processar apenas linhas não vazias
-                    for index, row in chunk.iterrows():
-                        row_text = " | ".join([str(cell) if pd.notna(cell) else "" for cell in row])
-                        if row_text.strip() and not row_text.replace(" | ", "").strip() == "":
-                            sheet_text += f"Linha {index + 1}: {row_text}\n"
-                    
-                    # Limpar chunk da memória
-                    del chunk
-                    gc.collect()
+                # Adicionar dados da planilha
+                for index, row in df.iterrows():
+                    row_text = " | ".join([str(cell) if pd.notna(cell) else "" for cell in row])
+                    if row_text.strip():  # Só adicionar linhas não vazias
+                        sheet_text += f"Linha {index + 1}: {row_text}\n"
                 
-                extracted_data.append(sheet_text)
-                del sheet_text
+                extracted_data['data'][sheet_name] = sheet_text
                 
             except Exception as e:
-                extracted_data.append(f"Erro na aba {sheet_name}: {str(e)}")
+                extracted_data['data'][sheet_name] = f"Erro ao processar aba {sheet_name}: {str(e)}"
         
-        # Fechar workbook
-        wb.close()
-        del wb
-        
-        # Combinar dados
+        # Combinar todos os dados em um texto
         combined_text = f"ARQUIVO EXCEL: {os.path.basename(file_path)}\n"
-        combined_text += "\n".join(extracted_data)
+        combined_text += f"ABAS DISPONÍVEIS: {', '.join(extracted_data['sheets'])}\n\n"
         
-        del extracted_data
-        gc.collect()
+        for sheet_name, sheet_data in extracted_data['data'].items():
+            combined_text += sheet_data + "\n"
         
         return combined_text
         
     except Exception as e:
-        return f"Erro Excel: {str(e)}"
+        return f"Erro ao processar arquivo Excel: {str(e)}"
 
-def extract_zip_optimized(file_path):
-    """Extração otimizada de ZIP"""
-    try:
-        extracted_text = ""
-        with zipfile.ZipFile(file_path, 'r') as zip_ref:
-            temp_dir = tempfile.mkdtemp()
-            
-            # Extrair apenas arquivos relevantes
-            relevant_extensions = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.txt']
-            
-            for file_info in zip_ref.filelist:
-                file_ext = os.path.splitext(file_info.filename)[1].lower()
-                if file_ext in relevant_extensions:
-                    try:
-                        zip_ref.extract(file_info, temp_dir)
-                        file_path_in_zip = os.path.join(temp_dir, file_info.filename)
-                        
-                        # Extrair texto e adicionar
-                        file_text = extract_text_from_file_optimized(file_path_in_zip)
-                        extracted_text += file_text + "\n\n"
-                        
-                        # Remover arquivo temporário imediatamente
-                        os.remove(file_path_in_zip)
-                        del file_text
-                        gc.collect()
-                        
-                    except:
-                        continue
-            
-            # Limpar diretório temporário
-            import shutil
-            shutil.rmtree(temp_dir)
-        
-        return extracted_text
-        
-    except Exception as e:
-        return f"Erro ZIP: {str(e)}"
-
-def analyze_tr_content_optimized(tr_text):
-    """Análise otimizada do TR"""
-    # Limitar tamanho do texto para análise
-    if len(tr_text) > 50000:  # Limitar a 50k caracteres
-        tr_text = tr_text[:50000] + "... [texto truncado para otimização]"
-    
+def analyze_tr_content(tr_text):
+    """Analisa o conteúdo do Termo de Referência e extrai informações estruturadas"""
     analysis = {
         'resumo': '',
         'objeto': '',
         'requisitos_tecnicos': [],
         'prazos': [],
         'criterios_avaliacao': [],
-        'valores_estimados': []
+        'qualificacoes_exigidas': [],
+        'valores_estimados': [],
+        'especificacoes_tecnicas': [],
+        'metodologia_exigida': [],
+        'recursos_necessarios': []
     }
     
-    # Processar em chunks menores
-    lines = tr_text.split('\n')
-    chunk_size = 100
+    # Dividir texto em seções
+    sections = tr_text.split('\n')
+    current_section = ''
     
-    for i in range(0, len(lines), chunk_size):
-        chunk_lines = lines[i:i+chunk_size]
-        chunk_text = '\n'.join(chunk_lines)
-        
-        # Análise básica do chunk
-        if i == 0:  # Primeiro chunk para resumo
-            meaningful_lines = [line.strip() for line in chunk_lines if len(line.strip()) > 50]
-            if meaningful_lines:
-                analysis['resumo'] = ' '.join(meaningful_lines[:2])
-                analysis['objeto'] = meaningful_lines[0] if meaningful_lines else ''
-        
-        # Buscar prazos
-        prazo_matches = re.findall(r'(\d+)\s*(dia|mês|ano|semana)', chunk_text.lower())
-        for match in prazo_matches[:3]:  # Limitar a 3 por chunk
-            analysis['prazos'].append(f"{match[0]} {match[1]}")
-        
-        # Buscar valores
-        valor_matches = re.findall(r'R\$\s*[\d.,]+', chunk_text)
-        analysis['valores_estimados'].extend(valor_matches[:3])  # Limitar a 3 por chunk
-        
-        # Buscar requisitos técnicos
-        tech_keywords = ['técnico', 'especificação', 'requisito', 'metodologia']
-        for line in chunk_lines:
-            if any(keyword in line.lower() for keyword in tech_keywords) and len(line.strip()) > 30:
-                analysis['requisitos_tecnicos'].append(line.strip()[:200])  # Limitar tamanho
-                if len(analysis['requisitos_tecnicos']) >= 10:  # Limitar quantidade
-                    break
-        
-        # Limpar chunk da memória
-        del chunk_lines, chunk_text
-        gc.collect()
+    # Padrões para identificar informações importantes
+    prazo_patterns = [
+        r'prazo.*?(\d+).*?(dia|mês|ano|semana)',
+        r'cronograma.*?(\d+).*?(dia|mês|ano|semana)',
+        r'entrega.*?(\d+).*?(dia|mês|ano|semana)',
+        r'execução.*?(\d+).*?(dia|mês|ano|semana)'
+    ]
     
-    # Limitar tamanhos finais
-    analysis['requisitos_tecnicos'] = analysis['requisitos_tecnicos'][:10]
-    analysis['prazos'] = list(set(analysis['prazos']))[:5]
-    analysis['valores_estimados'] = list(set(analysis['valores_estimados']))[:5]
+    valor_patterns = [
+        r'R\$\s*[\d.,]+',
+        r'valor.*?R\$\s*[\d.,]+',
+        r'orçamento.*?R\$\s*[\d.,]+',
+        r'estimado.*?R\$\s*[\d.,]+'
+    ]
+    
+    # Extrair objeto/resumo (primeiros parágrafos significativos)
+    meaningful_paragraphs = [p.strip() for p in sections if len(p.strip()) > 50]
+    if meaningful_paragraphs:
+        analysis['resumo'] = ' '.join(meaningful_paragraphs[:3])
+        analysis['objeto'] = meaningful_paragraphs[0] if meaningful_paragraphs else ''
+    
+    # Buscar prazos com mais precisão
+    for section in sections:
+        for pattern in prazo_patterns:
+            matches = re.findall(pattern, section.lower())
+            for match in matches:
+                analysis['prazos'].append(f"{match[0]} {match[1]}")
+    
+    # Buscar valores
+    for section in sections:
+        for pattern in valor_patterns:
+            matches = re.findall(pattern, section)
+            analysis['valores_estimados'].extend(matches)
+    
+    # Identificar requisitos técnicos (seções que contêm palavras-chave)
+    tech_keywords = ['técnico', 'especificação', 'requisito', 'metodologia', 'equipamento', 'material', 'norma', 'padrão']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in tech_keywords) and len(section.strip()) > 30:
+            analysis['requisitos_tecnicos'].append(section.strip())
+    
+    # Identificar especificações técnicas detalhadas
+    spec_keywords = ['especificação', 'norma', 'padrão', 'certificação', 'qualidade', 'performance']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in spec_keywords) and len(section.strip()) > 40:
+            analysis['especificacoes_tecnicas'].append(section.strip())
+    
+    # Identificar metodologia exigida
+    method_keywords = ['metodologia', 'método', 'processo', 'procedimento', 'abordagem', 'estratégia']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in method_keywords) and len(section.strip()) > 40:
+            analysis['metodologia_exigida'].append(section.strip())
+    
+    # Identificar critérios de avaliação
+    eval_keywords = ['avaliação', 'critério', 'pontuação', 'peso', 'classificação', 'julgamento']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in eval_keywords) and len(section.strip()) > 30:
+            analysis['criterios_avaliacao'].append(section.strip())
+    
+    # Identificar qualificações exigidas
+    qual_keywords = ['qualificação', 'experiência', 'certificação', 'habilitação', 'comprovação', 'atestado']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in qual_keywords) and len(section.strip()) > 30:
+            analysis['qualificacoes_exigidas'].append(section.strip())
+    
+    # Identificar recursos necessários
+    resource_keywords = ['recurso', 'equipamento', 'ferramenta', 'material', 'insumo', 'mão de obra']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in resource_keywords) and len(section.strip()) > 30:
+            analysis['recursos_necessarios'].append(section.strip())
     
     return analysis
 
-def analyze_technical_proposal_optimized(proposal_text, company_name):
-    """Análise técnica otimizada"""
-    # Limitar tamanho do texto
-    if len(proposal_text) > 30000:
-        proposal_text = proposal_text[:30000] + "... [truncado]"
-    
+def analyze_technical_proposal_detailed(proposal_text, company_name):
+    """Análise técnica detalhada e aprofundada de uma proposta"""
     analysis = {
         'empresa': company_name,
         'cnpj': '',
-        'metodologia': {'descricao': '', 'aderencia_tr': 0},
-        'cronograma': {'viabilidade': '', 'marcos_principais': []},
-        'equipe_tecnica': {'adequacao_projeto': '', 'qualificacoes': []},
-        'recursos_tecnicos': {'equipamentos': [], 'tecnologias': []},
-        'experiencia_comprovada': {'projetos_similares': []},
+        'metodologia': {
+            'descricao': '',
+            'fases_identificadas': [],
+            'ferramentas_mencionadas': [],
+            'abordagem_qualitativa': '',
+            'aderencia_tr': 0
+        },
+        'cronograma': {
+            'prazo_total': '',
+            'marcos_principais': [],
+            'fases_detalhadas': [],
+            'recursos_por_fase': [],
+            'viabilidade': ''
+        },
+        'equipe_tecnica': {
+            'coordenador': '',
+            'especialistas': [],
+            'qualificacoes': [],
+            'experiencia_relevante': [],
+            'adequacao_projeto': ''
+        },
+        'recursos_tecnicos': {
+            'equipamentos': [],
+            'materiais': [],
+            'tecnologias': [],
+            'inovacoes': []
+        },
+        'experiencia_comprovada': {
+            'projetos_similares': [],
+            'referencias': [],
+            'certificacoes': [],
+            'cases_sucesso': []
+        },
+        'diferenciais_competitivos': [],
+        'riscos_identificados': [],
         'pontos_fortes': [],
         'pontos_fracos': [],
-        'score_detalhado': {'metodologia': 0, 'cronograma': 0, 'equipe': 0, 'recursos': 0, 'experiencia': 0}
+        'gaps_identificados': [],
+        'score_detalhado': {
+            'metodologia': 0,
+            'cronograma': 0,
+            'equipe': 0,
+            'recursos': 0,
+            'experiencia': 0
+        }
     }
     
-    # Extrair CNPJ
-    cnpj_match = re.search(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', proposal_text)
-    if cnpj_match:
-        analysis['cnpj'] = cnpj_match.group(1)
-    
-    # Análise simplificada por seções
     sections = proposal_text.split('\n')
     
-    # Metodologia
-    metodologia_sections = [s for s in sections if any(k in s.lower() for k in ['metodologia', 'método']) and len(s) > 50]
+    # Extrair CNPJ com padrões mais robustos
+    cnpj_patterns = [
+        r'CNPJ[:\s]*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+        r'CNPJ[:\s]*(\d{14})',
+        r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+        r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})'
+    ]
+    
+    for pattern in cnpj_patterns:
+        matches = re.findall(pattern, proposal_text, re.IGNORECASE)
+        if matches:
+            analysis['cnpj'] = matches[0]
+            break
+    
+    # Análise de Metodologia Detalhada
+    metodologia_keywords = ['metodologia', 'método', 'abordagem', 'estratégia', 'processo', 'procedimento']
+    metodologia_sections = []
+    
+    for section in sections:
+        if any(keyword in section.lower() for keyword in metodologia_keywords) and len(section.strip()) > 50:
+            metodologia_sections.append(section.strip())
+    
     if metodologia_sections:
-        analysis['metodologia']['descricao'] = metodologia_sections[0][:300]
-        analysis['metodologia']['aderencia_tr'] = 75 if len(metodologia_sections) > 1 else 50
+        analysis['metodologia']['descricao'] = ' '.join(metodologia_sections[:2])
+        
+        # Identificar fases da metodologia
+        fase_patterns = [
+            r'fase\s*(\d+)',
+            r'etapa\s*(\d+)',
+            r'passo\s*(\d+)',
+            r'estágio\s*(\d+)'
+        ]
+        
+        for section in metodologia_sections:
+            for pattern in fase_patterns:
+                matches = re.findall(pattern, section.lower())
+                for match in matches:
+                    analysis['metodologia']['fases_identificadas'].append(f"Fase {match}")
+        
+        # Identificar ferramentas mencionadas
+        ferramenta_keywords = ['ferramenta', 'software', 'sistema', 'plataforma', 'tecnologia']
+        for section in metodologia_sections:
+            for keyword in ferramenta_keywords:
+                if keyword in section.lower():
+                    # Extrair contexto da ferramenta
+                    words = section.split()
+                    for i, word in enumerate(words):
+                        if keyword in word.lower() and i < len(words) - 1:
+                            analysis['metodologia']['ferramentas_mencionadas'].append(f"{word} {words[i+1]}")
+        
+        # Avaliar aderência (básico)
+        if len(metodologia_sections) >= 2:
+            analysis['metodologia']['aderencia_tr'] = 80
+        elif len(metodologia_sections) == 1:
+            analysis['metodologia']['aderencia_tr'] = 60
+        else:
+            analysis['metodologia']['aderencia_tr'] = 20
+        
         analysis['score_detalhado']['metodologia'] = analysis['metodologia']['aderencia_tr']
-        analysis['pontos_fortes'].append('Metodologia apresentada')
     else:
-        analysis['pontos_fracos'].append('Metodologia não detalhada')
-        analysis['score_detalhado']['metodologia'] = 20
+        analysis['metodologia']['descricao'] = 'Metodologia não claramente identificada ou apresentada de forma insuficiente'
+        analysis['gaps_identificados'].append('Metodologia não detalhada adequadamente')
+        analysis['score_detalhado']['metodologia'] = 10
     
-    # Cronograma
-    cronograma_sections = [s for s in sections if any(k in s.lower() for k in ['cronograma', 'prazo']) and len(s) > 30]
-    if cronograma_sections:
-        analysis['cronograma']['viabilidade'] = 'Cronograma apresentado'
-        # Extrair marcos
-        time_matches = re.findall(r'(\d+)\s*(dia|semana|mês)', ' '.join(cronograma_sections[:3]))
-        analysis['cronograma']['marcos_principais'] = [f"{m[0]} {m[1]}" for m in time_matches[:3]]
-        analysis['score_detalhado']['cronograma'] = 70
-        analysis['pontos_fortes'].append('Cronograma definido')
+    # Análise de Cronograma Detalhada
+    cronograma_keywords = ['cronograma', 'prazo', 'etapa', 'fase', 'período', 'duração', 'tempo']
+    cronograma_sections = []
+    
+    for section in sections:
+        if any(keyword in section.lower() for keyword in cronograma_keywords):
+            cronograma_sections.append(section.strip())
+    
+    # Extrair prazos específicos
+    time_patterns = [
+        r'(\d+)\s*(dia|semana|mês|ano)',
+        r'(\d+)\s*a\s*(\d+)\s*(dia|semana|mês|ano)',
+        r'prazo.*?(\d+).*?(dia|semana|mês|ano)'
+    ]
+    
+    for section in cronograma_sections:
+        for pattern in time_patterns:
+            matches = re.findall(pattern, section.lower())
+            for match in matches:
+                if len(match) == 2:
+                    analysis['cronograma']['marcos_principais'].append(f"{match[0]} {match[1]}")
+                elif len(match) == 4:
+                    analysis['cronograma']['marcos_principais'].append(f"{match[0]} a {match[1]} {match[2]}")
+    
+    # Identificar fases detalhadas do cronograma
+    for section in cronograma_sections:
+        if len(section) > 100:  # Seções mais detalhadas
+            analysis['cronograma']['fases_detalhadas'].append(section[:200] + "...")
+    
+    # Avaliar viabilidade do cronograma
+    if analysis['cronograma']['marcos_principais']:
+        analysis['cronograma']['viabilidade'] = 'Cronograma apresentado com marcos definidos'
+        analysis['score_detalhado']['cronograma'] = 75
+    elif cronograma_sections:
+        analysis['cronograma']['viabilidade'] = 'Cronograma mencionado mas sem detalhamento adequado'
+        analysis['score_detalhado']['cronograma'] = 40
     else:
-        analysis['cronograma']['viabilidade'] = 'Cronograma não apresentado'
-        analysis['score_detalhado']['cronograma'] = 20
-        analysis['pontos_fracos'].append('Cronograma não detalhado')
+        analysis['cronograma']['viabilidade'] = 'Cronograma não apresentado ou insuficiente'
+        analysis['gaps_identificados'].append('Cronograma não detalhado')
+        analysis['score_detalhado']['cronograma'] = 10
     
-    # Equipe
-    equipe_sections = [s for s in sections if any(k in s.lower() for k in ['equipe', 'profissional', 'coordenador']) and len(s) > 20]
-    if equipe_sections:
-        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe apresentada'
-        analysis['equipe_tecnica']['qualificacoes'] = [s[:150] for s in equipe_sections[:3]]
-        analysis['score_detalhado']['equipe'] = 65
-        analysis['pontos_fortes'].append('Equipe técnica apresentada')
+    # Análise de Equipe Técnica Detalhada
+    equipe_keywords = ['equipe', 'profissional', 'responsável', 'coordenador', 'especialista', 'técnico', 'engenheiro']
+    equipe_sections = []
+    
+    for section in sections:
+        if any(keyword in section.lower() for keyword in equipe_keywords) and len(section.strip()) > 20:
+            equipe_sections.append(section.strip())
+    
+    # Identificar coordenador/responsável técnico
+    coord_keywords = ['coordenador', 'responsável técnico', 'gerente', 'líder']
+    for section in equipe_sections:
+        for keyword in coord_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['coordenador'] = section[:150] + "..."
+                break
+    
+    # Identificar especialistas
+    espec_keywords = ['especialista', 'expert', 'consultor', 'profissional especializado']
+    for section in equipe_sections:
+        for keyword in espec_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['especialistas'].append(section[:100] + "...")
+    
+    # Identificar qualificações
+    qual_keywords = ['qualificação', 'formação', 'certificação', 'experiência', 'graduação', 'pós-graduação']
+    for section in equipe_sections:
+        for keyword in qual_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['qualificacoes'].append(section[:120] + "...")
+    
+    # Identificar experiência relevante
+    exp_keywords = ['experiência', 'projeto similar', 'case', 'trabalho anterior', 'histórico']
+    for section in equipe_sections:
+        for keyword in exp_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['experiencia_relevante'].append(section[:120] + "...")
+    
+    # Avaliar adequação da equipe
+    equipe_score = 0
+    if analysis['equipe_tecnica']['coordenador']:
+        equipe_score += 25
+    if analysis['equipe_tecnica']['especialistas']:
+        equipe_score += 25
+    if analysis['equipe_tecnica']['qualificacoes']:
+        equipe_score += 25
+    if analysis['equipe_tecnica']['experiencia_relevante']:
+        equipe_score += 25
+    
+    analysis['score_detalhado']['equipe'] = equipe_score
+    
+    if equipe_score >= 75:
+        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe bem estruturada e qualificada'
+    elif equipe_score >= 50:
+        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe adequada com algumas lacunas'
     else:
-        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe não detalhada'
-        analysis['score_detalhado']['equipe'] = 25
-        analysis['pontos_fracos'].append('Equipe não detalhada')
+        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe insuficientemente detalhada'
+        analysis['gaps_identificados'].append('Detalhamento insuficiente da equipe técnica')
     
-    # Recursos
-    recurso_sections = [s for s in sections if any(k in s.lower() for k in ['equipamento', 'recurso', 'material']) and len(s) > 20]
-    if recurso_sections:
-        analysis['recursos_tecnicos']['equipamentos'] = [s[:100] for s in recurso_sections[:3]]
-        analysis['score_detalhado']['recursos'] = 60
-        analysis['pontos_fortes'].append('Recursos técnicos especificados')
+    # Análise de Recursos Técnicos
+    recurso_keywords = ['equipamento', 'ferramenta', 'material', 'recurso', 'tecnologia', 'software', 'hardware']
+    
+    for section in sections:
+        for keyword in recurso_keywords:
+            if keyword in section.lower() and len(section.strip()) > 30:
+                if 'equipamento' in keyword or 'ferramenta' in keyword:
+                    analysis['recursos_tecnicos']['equipamentos'].append(section[:100] + "...")
+                elif 'material' in keyword or 'insumo' in keyword:
+                    analysis['recursos_tecnicos']['materiais'].append(section[:100] + "...")
+                elif 'tecnologia' in keyword or 'software' in keyword:
+                    analysis['recursos_tecnicos']['tecnologias'].append(section[:100] + "...")
+    
+    # Avaliar recursos
+    recursos_score = 0
+    if analysis['recursos_tecnicos']['equipamentos']:
+        recursos_score += 35
+    if analysis['recursos_tecnicos']['materiais']:
+        recursos_score += 35
+    if analysis['recursos_tecnicos']['tecnologias']:
+        recursos_score += 30
+    
+    analysis['score_detalhado']['recursos'] = recursos_score
+    
+    # Análise de Experiência Comprovada
+    exp_keywords = ['projeto similar', 'experiência', 'referência', 'atestado', 'certificação', 'case']
+    
+    for section in sections:
+        for keyword in exp_keywords:
+            if keyword in section.lower() and len(section.strip()) > 40:
+                if 'projeto' in keyword or 'case' in keyword:
+                    analysis['experiencia_comprovada']['projetos_similares'].append(section[:150] + "...")
+                elif 'referência' in keyword or 'atestado' in keyword:
+                    analysis['experiencia_comprovada']['referencias'].append(section[:150] + "...")
+                elif 'certificação' in keyword:
+                    analysis['experiencia_comprovada']['certificacoes'].append(section[:150] + "...")
+    
+    # Avaliar experiência
+    exp_score = 0
+    if analysis['experiencia_comprovada']['projetos_similares']:
+        exp_score += 40
+    if analysis['experiencia_comprovada']['referencias']:
+        exp_score += 30
+    if analysis['experiencia_comprovada']['certificacoes']:
+        exp_score += 30
+    
+    analysis['score_detalhado']['experiencia'] = exp_score
+    
+    # Identificar Diferenciais Competitivos
+    diferencial_keywords = ['diferencial', 'inovação', 'vantagem', 'exclusivo', 'único', 'pioneiro']
+    for section in sections:
+        for keyword in diferencial_keywords:
+            if keyword in section.lower() and len(section.strip()) > 40:
+                analysis['diferenciais_competitivos'].append(section[:120] + "...")
+    
+    # Identificar Riscos
+    risco_keywords = ['risco', 'problema', 'dificuldade', 'limitação', 'restrição']
+    for section in sections:
+        for keyword in risco_keywords:
+            if keyword in section.lower() and len(section.strip()) > 30:
+                analysis['riscos_identificados'].append(section[:100] + "...")
+    
+    # Calcular Pontos Fortes e Fracos baseado nos scores
+    if analysis['score_detalhado']['metodologia'] >= 70:
+        analysis['pontos_fortes'].append('Metodologia bem estruturada e detalhada')
     else:
-        analysis['score_detalhado']['recursos'] = 30
-        analysis['pontos_fracos'].append('Recursos não especificados')
+        analysis['pontos_fracos'].append('Metodologia insuficientemente detalhada')
     
-    # Experiência
-    exp_sections = [s for s in sections if any(k in s.lower() for k in ['experiência', 'projeto', 'referência']) and len(s) > 30]
-    if exp_sections:
-        analysis['experiencia_comprovada']['projetos_similares'] = [s[:150] for s in exp_sections[:2]]
-        analysis['score_detalhado']['experiencia'] = 70
-        analysis['pontos_fortes'].append('Experiência comprovada')
+    if analysis['score_detalhado']['cronograma'] >= 70:
+        analysis['pontos_fortes'].append('Cronograma bem definido com marcos claros')
     else:
-        analysis['score_detalhado']['experiencia'] = 25
-        analysis['pontos_fracos'].append('Experiência não comprovada')
+        analysis['pontos_fracos'].append('Cronograma não adequadamente apresentado')
     
-    # Limpar variáveis grandes
-    del sections, proposal_text
-    gc.collect()
+    if analysis['score_detalhado']['equipe'] >= 70:
+        analysis['pontos_fortes'].append('Equipe técnica qualificada e bem estruturada')
+    else:
+        analysis['pontos_fracos'].append('Equipe técnica insuficientemente detalhada')
+    
+    if analysis['score_detalhado']['recursos'] >= 70:
+        analysis['pontos_fortes'].append('Recursos técnicos adequados e bem especificados')
+    else:
+        analysis['pontos_fracos'].append('Recursos técnicos não adequadamente especificados')
+    
+    if analysis['score_detalhado']['experiencia'] >= 70:
+        analysis['pontos_fortes'].append('Experiência comprovada em projetos similares')
+    else:
+        analysis['pontos_fracos'].append('Experiência em projetos similares não comprovada')
     
     return analysis
 
-def analyze_commercial_proposal_optimized(proposal_text, company_name, cnpj):
-    """Análise comercial otimizada"""
+def analyze_commercial_proposal_excel(proposal_text, company_name, cnpj):
+    """Analisa uma proposta comercial incluindo dados de Excel"""
     analysis = {
         'empresa': company_name,
         'cnpj': cnpj,
         'preco_total': '',
-        'bdi': '',
+        'composicao_custos': {},
         'condicoes_pagamento': '',
-        'itens_servicos': []
+        'prazos': [],
+        'bdi': '',
+        'observacoes': [],
+        'itens_servicos': [],
+        'detalhes_bdi': {}
     }
     
-    # Se é Excel, processar diferente
+    # Se o texto contém dados de Excel, processar de forma diferente
     if "ARQUIVO EXCEL:" in proposal_text:
-        return analyze_excel_commercial_optimized(proposal_text, company_name, cnpj)
+        return analyze_excel_commercial_data(proposal_text, company_name, cnpj)
     
-    # Análise simplificada para PDF
-    # Buscar preços
-    price_matches = re.findall(r'R\$\s*[\d.,]+', proposal_text)
-    if price_matches:
-        # Converter para comparação e pegar o maior
-        prices_with_values = []
-        for price in price_matches:
-            clean_price = re.sub(r'[^\d,.]', '', price)
-            try:
-                if ',' in clean_price and '.' in clean_price:
-                    clean_price = clean_price.replace('.', '').replace(',', '.')
-                elif ',' in clean_price:
-                    clean_price = clean_price.replace(',', '.')
-                float_value = float(clean_price)
-                prices_with_values.append((price, float_value))
-            except:
-                continue
-        
-        if prices_with_values:
-            analysis['preco_total'] = max(prices_with_values, key=lambda x: x[1])[0]
-    
-    # Buscar CNPJ se não fornecido
-    if not analysis['cnpj']:
-        cnpj_match = re.search(r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', proposal_text)
-        if cnpj_match:
-            analysis['cnpj'] = cnpj_match.group(1)
-    
-    # Buscar BDI
-    bdi_match = re.search(r'bdi.*?(\d+[,.]?\d*)%?', proposal_text.lower())
-    if bdi_match:
-        analysis['bdi'] = bdi_match.group(1) + '%'
-    
-    # Limpar texto da memória
-    del proposal_text
-    gc.collect()
-    
-    return analysis
+    # Processar como PDF normal
+    return analyze_commercial_proposal_pdf(proposal_text, company_name, cnpj)
 
-def analyze_excel_commercial_optimized(excel_text, company_name, cnpj):
-    """Análise otimizada de dados comerciais do Excel"""
+def analyze_excel_commercial_data(excel_text, company_name, cnpj):
+    """Analisa dados comerciais extraídos de Excel"""
     analysis = {
         'empresa': company_name,
         'cnpj': cnpj,
         'preco_total': '',
-        'bdi': '',
+        'composicao_custos': {},
         'condicoes_pagamento': '',
-        'itens_servicos': []
+        'prazos': [],
+        'bdi': '',
+        'observacoes': [],
+        'itens_servicos': [],
+        'detalhes_bdi': {}
     }
     
     lines = excel_text.split('\n')
     
-    # Processar apenas linhas relevantes
+    # Buscar preços na aba "Itens Serviços"
     in_itens_servicos = False
     precos_encontrados = []
     
@@ -986,203 +1094,666 @@ def analyze_excel_commercial_optimized(excel_text, company_name, cnpj):
             in_itens_servicos = False
             continue
         
+        if in_itens_servicos and "Preço Total(R$)" in line:
+            # Próximas linhas devem conter os preços
+            continue
+        
         if in_itens_servicos and line.strip():
-            # Buscar valores numéricos
+            # Buscar valores numéricos na linha
             valores = re.findall(r'[\d.,]+', line)
-            for valor in valores[:3]:  # Limitar a 3 por linha
+            for valor in valores:
                 try:
+                    # Tentar converter para float
                     if '.' in valor and ',' in valor:
+                        # Formato brasileiro: 1.234.567,89
                         clean_valor = valor.replace('.', '').replace(',', '.')
                     elif ',' in valor:
+                        # Pode ser decimal brasileiro: 1234,89
                         clean_valor = valor.replace(',', '.')
                     else:
                         clean_valor = valor
                     
                     float_valor = float(clean_valor)
-                    if float_valor > 100:
+                    if float_valor > 100:  # Filtrar valores muito pequenos
                         precos_encontrados.append((valor, float_valor))
-                        if len(precos_encontrados) >= 10:  # Limitar quantidade
-                            break
+                        analysis['itens_servicos'].append(f"R$ {valor}")
                 except:
                     continue
-        
-        # Buscar BDI
-        if "=== ABA: BDI ===" in line:
-            # Próximas 20 linhas podem conter BDI
-            for i, next_line in enumerate(lines[lines.index(line):lines.index(line)+20]):
-                if i == 0:
-                    continue
-                bdi_matches = re.findall(r'(\d+[,.]?\d*)%?', next_line)
-                for match in bdi_matches:
-                    try:
-                        bdi_val = float(match.replace(',', '.'))
-                        if 5 <= bdi_val <= 50:
-                            analysis['bdi'] = f"{bdi_val}%"
-                            break
-                    except:
-                        continue
-                if analysis['bdi']:
-                    break
     
-    # Determinar preço total
+    # Determinar preço total (maior valor ou soma)
     if precos_encontrados:
+        # Ordenar por valor
         precos_encontrados.sort(key=lambda x: x[1], reverse=True)
+        
+        # Se há muitos valores, somar todos; senão, pegar o maior
         if len(precos_encontrados) > 5:
             total = sum([p[1] for p in precos_encontrados])
             analysis['preco_total'] = f"R$ {total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
         else:
             analysis['preco_total'] = f"R$ {precos_encontrados[0][0]}"
     
-    # Limpar variáveis
-    del lines, precos_encontrados
-    gc.collect()
+    # Buscar BDI na aba específica
+    in_bdi = False
+    for line in lines:
+        if "=== ABA: BDI ===" in line:
+            in_bdi = True
+            continue
+        elif "=== ABA:" in line and in_bdi:
+            in_bdi = False
+            continue
+        
+        if in_bdi and line.strip():
+            # Buscar percentuais de BDI
+            bdi_matches = re.findall(r'(\d+[,.]?\d*)%?', line)
+            if bdi_matches:
+                for match in bdi_matches:
+                    try:
+                        bdi_val = float(match.replace(',', '.'))
+                        if 5 <= bdi_val <= 50:  # BDI típico entre 5% e 50%
+                            analysis['bdi'] = f"{bdi_val}%"
+                            break
+                    except:
+                        continue
+    
+    # Buscar composição de custos
+    in_comp_custo = False
+    for line in lines:
+        if "=== ABA: Comp. Custo -GLOBAL ===" in line:
+            in_comp_custo = True
+            continue
+        elif "=== ABA:" in line and in_comp_custo:
+            in_comp_custo = False
+            continue
+        
+        if in_comp_custo and line.strip():
+            # Identificar categorias de custo
+            if any(keyword in line.lower() for keyword in ['mão de obra', 'material', 'equipamento']):
+                analysis['observacoes'].append(line.strip()[:100] + "...")
+    
+    # Buscar CNPJ se não fornecido
+    if not analysis['cnpj']:
+        cnpj_patterns = [
+            r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+            r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})'
+        ]
+        
+        for pattern in cnpj_patterns:
+            matches = re.findall(pattern, excel_text)
+            if matches:
+                analysis['cnpj'] = matches[0]
+                break
     
     return analysis
 
-def generate_optimized_report(project_name, project_description, tr_analysis, technical_analyses, commercial_analyses):
-    """Gera relatório otimizado"""
-    current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
+def analyze_commercial_proposal_pdf(proposal_text, company_name, cnpj):
+    """Analisa uma proposta comercial em PDF"""
+    analysis = {
+        'empresa': company_name,
+        'cnpj': cnpj,
+        'preco_total': '',
+        'composicao_custos': {},
+        'condicoes_pagamento': '',
+        'prazos': [],
+        'bdi': '',
+        'observacoes': []
+    }
     
-    # Calcular rankings
-    tech_ranking = []
+    # Buscar preços com padrões mais abrangentes
+    price_patterns = [
+        r'R\$\s*[\d.,]+',
+        r'total.*?R\$\s*[\d.,]+',
+        r'valor.*?R\$\s*[\d.,]+',
+        r'preço.*?R\$\s*[\d.,]+',
+        r'global.*?R\$\s*[\d.,]+',
+        r'[\d.,]+\s*reais'
+    ]
+    
+    prices_found = []
+    for pattern in price_patterns:
+        matches = re.findall(pattern, proposal_text, re.IGNORECASE)
+        prices_found.extend(matches)
+    
+    if prices_found:
+        # Limpar e converter preços para comparação
+        cleaned_prices = []
+        for price in prices_found:
+            # Extrair apenas números e vírgulas/pontos
+            clean_price = re.sub(r'[^\d,.]', '', price)
+            if clean_price:
+                try:
+                    # Converter para float para comparação
+                    if ',' in clean_price and '.' in clean_price:
+                        # Formato brasileiro: 1.234.567,89
+                        clean_price = clean_price.replace('.', '').replace(',', '.')
+                    elif ',' in clean_price:
+                        # Pode ser decimal brasileiro: 1234,89
+                        clean_price = clean_price.replace(',', '.')
+                    
+                    float_value = float(clean_price)
+                    cleaned_prices.append((price, float_value))
+                except:
+                    continue
+        
+        if cleaned_prices:
+            # Assumir que o maior valor é o preço total
+            analysis['preco_total'] = max(cleaned_prices, key=lambda x: x[1])[0]
+    
+    # Buscar CNPJ com padrão mais específico
+    if not analysis['cnpj']:
+        cnpj_patterns = [
+            r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}',
+            r'\d{14}',
+            r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+            r'CNPJ.*?(\d{14})'
+        ]
+        
+        for pattern in cnpj_patterns:
+            matches = re.findall(pattern, proposal_text)
+            if matches:
+                analysis['cnpj'] = matches[0]
+                break
+    
+    # Buscar condições de pagamento
+    payment_keywords = ['pagamento', 'parcela', 'à vista', 'prazo', 'condição']
+    sections = proposal_text.split('\n')
+    
+    for section in sections:
+        if any(keyword in section.lower() for keyword in payment_keywords) and len(section.strip()) > 20:
+            analysis['condicoes_pagamento'] = section.strip()
+            break
+    
+    # Buscar BDI
+    bdi_patterns = [
+        r'bdi.*?(\d+[,.]?\d*)%?',
+        r'benefício.*?(\d+[,.]?\d*)%?',
+        r'despesas.*?indiretas.*?(\d+[,.]?\d*)%?'
+    ]
+    
+    for pattern in bdi_patterns:
+        matches = re.findall(pattern, proposal_text.lower())
+        if matches:
+            analysis['bdi'] = matches[0] + '%'
+            break
+    
+    # Buscar prazos
+    prazo_patterns = [
+        r'prazo.*?(\d+).*?(dia|mês|ano)',
+        r'entrega.*?(\d+).*?(dia|mês|ano)',
+        r'execução.*?(\d+).*?(dia|mês|ano)'
+    ]
+    
+    for pattern in prazo_patterns:
+        matches = re.findall(pattern, proposal_text.lower())
+        for match in matches:
+            analysis['prazos'].append(f"{match[0]} {match[1]}")
+    
+    return analysis
+
+def generate_detailed_comparative_analysis(tr_analysis, technical_analyses, commercial_analyses):
+    """Gera análise comparativa detalhada entre propostas e TR"""
+    
+    # Análise técnica comparativa detalhada
+    tech_comparison = {
+        'matriz_comparacao': {},
+        'ranking_tecnico': [],
+        'analise_gaps': {},
+        'recomendacoes_tecnicas': [],
+        'riscos_por_empresa': {}
+    }
+    
+    # Análise comercial comparativa
+    comm_comparison = {
+        'ranking_precos': [],
+        'analise_custo_beneficio': {},
+        'condicoes_comparadas': {},
+        'recomendacoes_comerciais': []
+    }
+    
+    # Criar matriz de comparação técnica
+    criterios_tecnicos = ['metodologia', 'cronograma', 'equipe', 'recursos', 'experiencia']
+    
     for analysis in technical_analyses:
+        empresa = analysis['empresa']
         scores = analysis['score_detalhado']
-        avg_score = sum(scores.values()) / len(scores) if scores else 0
-        tech_ranking.append((analysis['empresa'], avg_score))
+        
+        tech_comparison['matriz_comparacao'][empresa] = scores
+        
+        # Calcular score total
+        score_total = sum(scores.values()) / len(scores)
+        tech_comparison['ranking_tecnico'].append((empresa, score_total))
+        
+        # Análise de gaps
+        gaps = analysis['gaps_identificados']
+        tech_comparison['analise_gaps'][empresa] = gaps
+        
+        # Riscos identificados
+        riscos = analysis['riscos_identificados']
+        tech_comparison['riscos_por_empresa'][empresa] = riscos
     
-    tech_ranking.sort(key=lambda x: x[1], reverse=True)
+    # Ordenar ranking técnico
+    tech_comparison['ranking_tecnico'].sort(key=lambda x: x[1], reverse=True)
     
-    # Ranking comercial
-    comm_ranking = []
+    # Gerar recomendações técnicas
+    if tech_comparison['ranking_tecnico']:
+        melhor_empresa = tech_comparison['ranking_tecnico'][0][0]
+        tech_comparison['recomendacoes_tecnicas'].append(
+            f"Empresa {melhor_empresa} apresentou o melhor desempenho técnico geral"
+        )
+        
+        # Recomendações específicas por critério
+        for criterio in criterios_tecnicos:
+            melhor_criterio = max(technical_analyses, 
+                                key=lambda x: x['score_detalhado'].get(criterio, 0))
+            tech_comparison['recomendacoes_tecnicas'].append(
+                f"Em {criterio}: {melhor_criterio['empresa']} se destaca"
+            )
+    
+    # Comparar propostas comerciais
+    precos_empresas = []
     for analysis in commercial_analyses:
         if analysis.get('preco_total'):
+            # Extrair valor numérico para comparação
             valor_str = re.sub(r'[^\d,.]', '', analysis['preco_total'])
             try:
                 if ',' in valor_str and '.' in valor_str:
                     valor_str = valor_str.replace('.', '').replace(',', '.')
                 elif ',' in valor_str:
                     valor_str = valor_str.replace(',', '.')
+                
                 valor_num = float(valor_str)
-                comm_ranking.append((analysis['empresa'], analysis['preco_total'], valor_num))
+                precos_empresas.append((analysis['empresa'], analysis['preco_total'], valor_num))
             except:
-                comm_ranking.append((analysis['empresa'], analysis['preco_total'], 0))
+                precos_empresas.append((analysis['empresa'], analysis['preco_total'], 0))
     
-    comm_ranking.sort(key=lambda x: x[2])
+    # Ordenar por preço (menor para maior)
+    precos_empresas.sort(key=lambda x: x[2])
+    comm_comparison['ranking_precos'] = [(empresa, preco_str) for empresa, preco_str, _ in precos_empresas]
     
-    # Gerar relatório simplificado
+    # Análise de custo-benefício
+    for i, (empresa_tech, score_tech) in enumerate(tech_comparison['ranking_tecnico']):
+        # Encontrar posição no ranking comercial
+        pos_comercial = next((j for j, (emp_comm, _) in enumerate(comm_comparison['ranking_precos']) 
+                            if emp_comm == empresa_tech), len(comm_comparison['ranking_precos']))
+        
+        # Calcular índice custo-benefício (quanto menor, melhor)
+        indice_cb = (i + 1) + (pos_comercial + 1)  # Posição técnica + posição comercial
+        comm_comparison['analise_custo_beneficio'][empresa_tech] = {
+            'posicao_tecnica': i + 1,
+            'posicao_comercial': pos_comercial + 1,
+            'indice_custo_beneficio': indice_cb,
+            'score_tecnico': score_tech
+        }
+    
+    return tech_comparison, comm_comparison
+
+def generate_enhanced_report(project_name, project_description, tr_analysis, technical_analyses, commercial_analyses, tech_comparison, comm_comparison):
+    """Gera relatório aprimorado com análise técnica detalhada e dados comerciais de Excel"""
+    
+    current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
+    
     report = f"""# 📊 RELATÓRIO DE ANÁLISE DE PROPOSTAS - {project_name.upper()}
 
-**Data:** {current_time}
+**Data de Análise:** {current_time}
 **Projeto:** {project_name}
+**Descrição:** {project_description if project_description else 'Não informada'}
 
 ---
 
 ## 🎯 BLOCO 1: RESUMO DO TERMO DE REFERÊNCIA
 
-### Objeto
-{tr_analysis.get('objeto', 'Não identificado')}
+### Objeto do Projeto
+{tr_analysis.get('objeto', 'Não identificado claramente')}
 
-### Resumo
-{tr_analysis.get('resumo', 'Não disponível')}
+### Resumo Executivo do TR
+{tr_analysis.get('resumo', 'Resumo não disponível')}
 
-### Prazos Identificados
+### Requisitos Técnicos Principais
 """
     
+    if tr_analysis.get('requisitos_tecnicos'):
+        for i, req in enumerate(tr_analysis['requisitos_tecnicos'][:5], 1):
+            report += f"**{i}.** {req[:200]}...\n\n"
+    else:
+        report += "Requisitos técnicos não claramente identificados no TR.\n\n"
+    
+    report += "### Especificações Técnicas Exigidas\n"
+    if tr_analysis.get('especificacoes_tecnicas'):
+        for i, spec in enumerate(tr_analysis['especificacoes_tecnicas'][:3], 1):
+            report += f"**{i}.** {spec[:200]}...\n\n"
+    else:
+        report += "Especificações técnicas não claramente definidas no TR.\n\n"
+    
+    report += "### Metodologia Exigida pelo TR\n"
+    if tr_analysis.get('metodologia_exigida'):
+        for method in tr_analysis['metodologia_exigida'][:2]:
+            report += f"- {method[:150]}...\n"
+    else:
+        report += "Metodologia específica não exigida ou não claramente definida no TR.\n"
+    
+    report += "\n### Prazos Estabelecidos\n"
     if tr_analysis.get('prazos'):
-        for prazo in tr_analysis['prazos'][:5]:
+        for prazo in tr_analysis['prazos']:
             report += f"- {prazo}\n"
     else:
-        report += "Prazos não identificados.\n"
+        report += "Prazos não claramente especificados no TR.\n"
     
-    report += """
+    report += "\n### Critérios de Avaliação\n"
+    if tr_analysis.get('criterios_avaliacao'):
+        for criterio in tr_analysis['criterios_avaliacao'][:3]:
+            report += f"- {criterio[:150]}...\n"
+    else:
+        report += "Critérios de avaliação não claramente definidos no TR.\n"
+    
+    report += f"""
 
 ---
 
-## 🔧 BLOCO 2: EQUALIZAÇÃO TÉCNICA
+## 🔧 BLOCO 2: EQUALIZAÇÃO DAS PROPOSTAS TÉCNICAS
 
-### Ranking Técnico
+### Matriz de Comparação Técnica Detalhada
 """
     
-    if tech_ranking:
-        for i, (empresa, score) in enumerate(tech_ranking, 1):
-            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
-            report += f"{emoji} **{i}º:** {empresa} - {score:.1f}%\n"
+    if tech_comparison.get('matriz_comparacao'):
+        report += "| Empresa | Metodologia | Cronograma | Equipe | Recursos | Experiência | Score Total |\n"
+        report += "|---------|-------------|------------|--------|----------|-------------|-------------|\n"
+        
+        for empresa, score_total in tech_comparison['ranking_tecnico']:
+            scores = tech_comparison['matriz_comparacao'][empresa]
+            score_medio = score_total
+            
+            report += f"| {empresa} | {scores.get('metodologia', 0)}% | {scores.get('cronograma', 0)}% | {scores.get('equipe', 0)}% | {scores.get('recursos', 0)}% | {scores.get('experiencia', 0)}% | **{score_medio:.1f}%** |\n"
+        
+        report += "\n"
     
-    # Análise por empresa (simplificada)
+    # Análise detalhada por empresa
     for analysis in technical_analyses:
         empresa = analysis['empresa']
         cnpj = analysis.get('cnpj', 'Não identificado')
         
         report += f"""
+### 📋 Análise Técnica Detalhada: {empresa}
 
-### {empresa}
 **CNPJ:** {cnpj}
 
-**Metodologia:** {analysis['metodologia']['descricao'][:200] if analysis['metodologia']['descricao'] else 'Não apresentada'}...
+#### 🔬 Metodologia Proposta
+**Descrição:** {analysis['metodologia']['descricao']}
 
-**Cronograma:** {analysis['cronograma']['viabilidade']}
-
-**Pontos Fortes:**
+**Fases Identificadas:**
 """
-        for ponto in analysis['pontos_fortes'][:3]:
-            report += f"✅ {ponto}\n"
+        if analysis['metodologia']['fases_identificadas']:
+            for fase in analysis['metodologia']['fases_identificadas']:
+                report += f"- {fase}\n"
+        else:
+            report += "Fases não claramente identificadas.\n"
         
-        report += "\n**Pontos de Atenção:**\n"
-        for ponto in analysis['pontos_fracos'][:3]:
-            report += f"⚠️ {ponto}\n"
+        report += "\n**Ferramentas e Tecnologias Mencionadas:**\n"
+        if analysis['metodologia']['ferramentas_mencionadas']:
+            for ferramenta in analysis['metodologia']['ferramentas_mencionadas']:
+                report += f"- {ferramenta}\n"
+        else:
+            report += "Ferramentas específicas não mencionadas.\n"
+        
+        report += f"\n**Aderência ao TR:** {analysis['metodologia']['aderencia_tr']}%\n"
+        
+        report += "\n#### ⏰ Cronograma e Prazos\n"
+        report += f"**Viabilidade:** {analysis['cronograma']['viabilidade']}\n\n"
+        
+        report += "**Marcos Principais:**\n"
+        if analysis['cronograma']['marcos_principais']:
+            for marco in analysis['cronograma']['marcos_principais']:
+                report += f"- {marco}\n"
+        else:
+            report += "Marcos não claramente definidos.\n"
+        
+        report += "\n**Fases Detalhadas:**\n"
+        if analysis['cronograma']['fases_detalhadas']:
+            for fase in analysis['cronograma']['fases_detalhadas'][:2]:
+                report += f"- {fase}\n"
+        else:
+            report += "Detalhamento de fases não apresentado.\n"
+        
+        report += "\n#### 👥 Equipe Técnica\n"
+        report += f"**Adequação ao Projeto:** {analysis['equipe_tecnica']['adequacao_projeto']}\n\n"
+        
+        if analysis['equipe_tecnica']['coordenador']:
+            report += f"**Coordenador/Responsável Técnico:** {analysis['equipe_tecnica']['coordenador']}\n\n"
+        
+        report += "**Especialistas:**\n"
+        if analysis['equipe_tecnica']['especialistas']:
+            for esp in analysis['equipe_tecnica']['especialistas'][:3]:
+                report += f"- {esp}\n"
+        else:
+            report += "Especialistas não claramente identificados.\n"
+        
+        report += "\n**Qualificações:**\n"
+        if analysis['equipe_tecnica']['qualificacoes']:
+            for qual in analysis['equipe_tecnica']['qualificacoes'][:3]:
+                report += f"- {qual}\n"
+        else:
+            report += "Qualificações não detalhadas.\n"
+        
+        report += "\n#### 🛠️ Recursos Técnicos\n"
+        
+        report += "**Equipamentos:**\n"
+        if analysis['recursos_tecnicos']['equipamentos']:
+            for equip in analysis['recursos_tecnicos']['equipamentos'][:3]:
+                report += f"- {equip}\n"
+        else:
+            report += "Equipamentos não especificados.\n"
+        
+        report += "\n**Tecnologias:**\n"
+        if analysis['recursos_tecnicos']['tecnologias']:
+            for tech in analysis['recursos_tecnicos']['tecnologias'][:3]:
+                report += f"- {tech}\n"
+        else:
+            report += "Tecnologias não especificadas.\n"
+        
+        report += "\n#### 🏆 Experiência Comprovada\n"
+        
+        report += "**Projetos Similares:**\n"
+        if analysis['experiencia_comprovada']['projetos_similares']:
+            for proj in analysis['experiencia_comprovada']['projetos_similares'][:2]:
+                report += f"- {proj}\n"
+        else:
+            report += "Projetos similares não comprovados.\n"
+        
+        report += "\n**Certificações:**\n"
+        if analysis['experiencia_comprovada']['certificacoes']:
+            for cert in analysis['experiencia_comprovada']['certificacoes'][:2]:
+                report += f"- {cert}\n"
+        else:
+            report += "Certificações não apresentadas.\n"
+        
+        report += "\n#### ✅ Pontos Fortes\n"
+        if analysis['pontos_fortes']:
+            for ponto in analysis['pontos_fortes']:
+                report += f"✅ {ponto}\n"
+        else:
+            report += "Pontos fortes não claramente identificados.\n"
+        
+        report += "\n#### ⚠️ Pontos de Atenção e Gaps\n"
+        if analysis['pontos_fracos']:
+            for ponto in analysis['pontos_fracos']:
+                report += f"⚠️ {ponto}\n"
+        
+        if analysis['gaps_identificados']:
+            for gap in analysis['gaps_identificados']:
+                report += f"❌ {gap}\n"
+        
+        if not analysis['pontos_fracos'] and not analysis['gaps_identificados']:
+            report += "Nenhum ponto de atenção crítico identificado.\n"
+        
+        report += "\n#### 🎯 Diferenciais Competitivos\n"
+        if analysis['diferenciais_competitivos']:
+            for diff in analysis['diferenciais_competitivos']:
+                report += f"🌟 {diff}\n"
+        else:
+            report += "Diferenciais competitivos não claramente apresentados.\n"
+        
+        report += "\n---\n"
     
-    report += """
+    # Ranking técnico final
+    report += "\n### 🏆 Ranking Técnico Final\n"
+    if tech_comparison.get('ranking_tecnico'):
+        for i, (empresa, score) in enumerate(tech_comparison['ranking_tecnico'], 1):
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
+            report += f"{emoji} **{i}º lugar:** {empresa} - Score: {score:.1f}%\n"
+    
+    report += f"""
 
----
-
-## 💰 BLOCO 3: EQUALIZAÇÃO COMERCIAL
+## 💰 BLOCO 3: EQUALIZAÇÃO DAS PROPOSTAS COMERCIAIS
 
 ### Ranking de Preços
 """
     
-    if comm_ranking:
-        for i, (empresa, preco, _) in enumerate(comm_ranking, 1):
+    if comm_comparison.get('ranking_precos'):
+        report += "| Posição | Empresa | Preço Total | Status |\n"
+        report += "|---------|---------|-------------|--------|\n"
+        
+        for i, (empresa, preco) in enumerate(comm_comparison['ranking_precos'], 1):
             emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
-            report += f"{emoji} **{i}º:** {empresa} - {preco}\n"
+            status = "Menor preço" if i == 1 else f"{i}º menor preço"
+            
+            report += f"| {emoji} {i}º | {empresa} | {preco} | {status} |\n"
+        
+        report += "\n"
     else:
-        report += "Preços não identificados nas propostas.\n"
+        report += "**Atenção:** Não foi possível extrair informações de preços das propostas comerciais.\n\n"
     
-    # Análise comercial por empresa
+    # Análise detalhada por empresa comercial
     for analysis in commercial_analyses:
         empresa = analysis['empresa']
         report += f"""
+### 💼 Análise Comercial Detalhada: {empresa}
 
-### {empresa}
 **CNPJ:** {analysis.get('cnpj', 'Não informado')}
-**Preço:** {analysis.get('preco_total', 'Não identificado')}
+**Preço Total:** {analysis.get('preco_total', 'Não identificado')}
 **BDI:** {analysis.get('bdi', 'Não informado')}
+
+**Condições de Pagamento:**
+{analysis.get('condicoes_pagamento', 'Não especificadas claramente')}
+
+**Prazos Comerciais:**
 """
+        if analysis.get('prazos'):
+            for prazo in analysis['prazos']:
+                report += f"- {prazo}\n"
+        else:
+            report += "Prazos não especificados.\n"
+        
+        # Adicionar itens de serviços se disponível
+        if analysis.get('itens_servicos'):
+            report += "\n**Itens de Serviços Identificados:**\n"
+            for item in analysis['itens_servicos'][:5]:
+                report += f"- {item}\n"
+        
+        # Adicionar observações se disponível
+        if analysis.get('observacoes'):
+            report += "\n**Observações:**\n"
+            for obs in analysis['observacoes'][:3]:
+                report += f"- {obs}\n"
+        
+        report += "\n---\n"
     
-    report += """
-
----
-
-## 🎯 BLOCO 4: CONCLUSÃO
-
-### Recomendações
-"""
-    
-    if tech_ranking:
-        melhor_tecnica = tech_ranking[0][0]
-        report += f"**Melhor Técnica:** {melhor_tecnica}\n"
-    
-    if comm_ranking:
-        melhor_comercial = comm_ranking[0][0]
-        report += f"**Melhor Preço:** {melhor_comercial}\n"
+    # Análise de custo-benefício
+    report += "\n### 📊 Análise de Custo-Benefício\n"
+    if comm_comparison.get('analise_custo_beneficio'):
+        report += "| Empresa | Posição Técnica | Posição Comercial | Índice C/B | Recomendação |\n"
+        report += "|---------|-----------------|-------------------|------------|-------------|\n"
+        
+        # Ordenar por índice custo-benefício
+        cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
+                          key=lambda x: x[1]['indice_custo_beneficio'])
+        
+        for empresa, dados in cb_sorted:
+            indice = dados['indice_custo_beneficio']
+            recomendacao = "Excelente" if indice <= 4 else "Boa" if indice <= 6 else "Regular"
+            
+            report += f"| {empresa} | {dados['posicao_tecnica']}º | {dados['posicao_comercial']}º | {indice} | {recomendacao} |\n"
+        
+        report += "\n"
     
     report += f"""
 
-**Recomendação:** Analisar conjuntamente os aspectos técnicos e comerciais para a melhor decisão.
+## 🎯 BLOCO 4: CONCLUSÃO E RECOMENDAÇÕES
+
+### Síntese da Análise Técnica
+"""
+    
+    # Identificar melhor proposta técnica
+    melhor_tecnica = "A definir"
+    score_tecnico = 0
+    if tech_comparison.get('ranking_tecnico'):
+        melhor_tecnica, score_tecnico = tech_comparison['ranking_tecnico'][0]
+        report += f"**Melhor Proposta Técnica:** {melhor_tecnica} (Score: {score_tecnico:.1f}%)\n\n"
+        
+        # Justificativa técnica
+        melhor_analysis = next((a for a in technical_analyses if a['empresa'] == melhor_tecnica), None)
+        if melhor_analysis:
+            report += "**Justificativa:**\n"
+            for ponto in melhor_analysis['pontos_fortes'][:3]:
+                report += f"- {ponto}\n"
+    
+    report += "\n### Síntese da Análise Comercial\n"
+    melhor_comercial = "A definir"
+    if comm_comparison.get('ranking_precos'):
+        melhor_comercial_data = comm_comparison['ranking_precos'][0]
+        melhor_comercial = melhor_comercial_data[0]
+        report += f"**Melhor Proposta Comercial:** {melhor_comercial} - {melhor_comercial_data[1]}\n\n"
+    
+    # Recomendação de custo-benefício
+    melhor_cb = "A definir"
+    if comm_comparison.get('analise_custo_beneficio'):
+        cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
+                          key=lambda x: x[1]['indice_custo_beneficio'])
+        melhor_cb_data = cb_sorted[0]
+        melhor_cb = melhor_cb_data[0]
+        
+        report += f"**Melhor Custo-Benefício:** {melhor_cb} (Índice: {melhor_cb_data[1]['indice_custo_beneficio']})\n\n"
+    
+    report += """### Recomendações Específicas
+
+**Para a Tomada de Decisão:**
+
+1. **Verificação de Documentação:** Confirmar se todas as empresas apresentaram documentação completa de habilitação.
+
+2. **Esclarecimentos Técnicos:** Solicitar esclarecimentos sobre pontos não claramente apresentados nas propostas técnicas.
+
+3. **Análise de Saúde Financeira:** Verificar a situação financeira das empresas proponentes através de consultas aos órgãos competentes.
+
+4. **Negociação:** Considerar possibilidade de negociação com as empresas melhor classificadas.
+
+5. **Visita Técnica:** Realizar visita às instalações das empresas finalistas para verificação in loco.
+
+### Considerações Importantes
+
+- Esta análise foi realizada com base no conteúdo extraído dos documentos fornecidos.
+- Dados comerciais foram extraídos de planilhas Excel quando disponíveis.
+- Recomenda-se análise detalhada adicional por especialistas da área.
+- Verificar conformidade com a legislação de licitações aplicável.
+- Considerar aspectos qualitativos não capturados na análise automatizada.
 
 ---
 
-*Relatório gerado pelo Proposal Analyzer Pro - Versão Otimizada*
-*Data: {current_time}*
+### 📈 Resumo Executivo para Decisão
+"""
+    
+    # Resumo final
+    report += f"""
+**Melhor Proposta Técnica:** {melhor_tecnica}
+**Melhor Proposta Comercial:** {melhor_comercial}
+**Melhor Custo-Benefício:** {melhor_cb}
+
+**Recomendação Geral:** {'Empresa ' + melhor_cb + ' apresenta o melhor equilíbrio entre qualidade técnica e proposta comercial.' if melhor_cb != 'A definir' else 'Realizar análise conjunta dos aspectos técnicos e comerciais, considerando o melhor custo-benefício para o projeto.'}
+"""
+    
+    report += f"""
+
+---
+
+*Relatório gerado automaticamente pelo Proposal Analyzer Pro com Análise de IA Avançada*  
+*Data: {current_time}*  
+*Versão: 4.0 - Enhanced Technical Analysis with Excel Support*
 """
     
     return report
@@ -1194,7 +1765,7 @@ def index():
 @app.route('/analyze', methods=['POST'])
 def analyze_proposals():
     try:
-        # Obter dados básicos
+        # Obter dados do formulário
         project_name = request.form.get('projectName')
         project_description = request.form.get('projectDescription', '')
         
@@ -1206,20 +1777,16 @@ def analyze_proposals():
         if not tr_file:
             return jsonify({'success': False, 'error': 'Arquivo do TR é obrigatório.'})
         
-        # Salvar e processar TR
         tr_filename = f"tr_{tr_file.filename}"
         tr_path = os.path.join(app.config['UPLOAD_FOLDER'], tr_filename)
         tr_file.save(tr_path)
+        tr_text = extract_text_from_file(tr_path)
         
-        tr_text = extract_text_from_file_optimized(tr_path)
-        tr_analysis = analyze_tr_content_optimized(tr_text)
-        
-        # Limpar TR da memória
-        del tr_text
-        os.remove(tr_path)  # Remover arquivo temporário
-        gc.collect()
+        # Analisar TR com IA
+        tr_analysis = analyze_tr_content(tr_text)
         
         # Processar propostas técnicas
+        technical_proposals = []
         technical_analyses = []
         tech_companies = request.form.getlist('techCompany[]')
         tech_files = request.files.getlist('techFile[]')
@@ -1228,17 +1795,19 @@ def analyze_proposals():
             if company and file and file.filename:
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"tech_{i}_{file.filename}")
                 file.save(file_path)
+                content = extract_text_from_file(file_path)
                 
-                content = extract_text_from_file_optimized(file_path)
-                tech_analysis = analyze_technical_proposal_optimized(content, company)
+                # Análise técnica detalhada com IA
+                tech_analysis = analyze_technical_proposal_detailed(content, company)
                 technical_analyses.append(tech_analysis)
                 
-                # Limpar da memória
-                del content
-                os.remove(file_path)  # Remover arquivo temporário
-                gc.collect()
+                technical_proposals.append({
+                    'company': company,
+                    'content': content
+                })
         
         # Processar propostas comerciais
+        commercial_proposals = []
         commercial_analyses = []
         comm_companies = request.form.getlist('commCompany[]')
         comm_cnpjs = request.form.getlist('commCnpj[]')
@@ -1248,20 +1817,28 @@ def analyze_proposals():
             if company and file and file.filename:
                 file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"comm_{i}_{file.filename}")
                 file.save(file_path)
+                content = extract_text_from_file(file_path)
                 
-                content = extract_text_from_file_optimized(file_path)
-                comm_analysis = analyze_commercial_proposal_optimized(content, company, cnpj)
+                # Análise comercial com IA (incluindo Excel)
+                comm_analysis = analyze_commercial_proposal_excel(content, company, cnpj)
                 commercial_analyses.append(comm_analysis)
                 
-                # Limpar da memória
-                del content
-                os.remove(file_path)  # Remover arquivo temporário
-                gc.collect()
+                commercial_proposals.append({
+                    'company': company,
+                    'cnpj': cnpj,
+                    'content': content
+                })
         
-        # Gerar relatório otimizado
-        report = generate_optimized_report(
+        # Gerar análise comparativa detalhada
+        tech_comparison, comm_comparison = generate_detailed_comparative_analysis(
+            tr_analysis, technical_analyses, commercial_analyses
+        )
+        
+        # Gerar relatório aprimorado
+        report = generate_enhanced_report(
             project_name, project_description, tr_analysis,
-            technical_analyses, commercial_analyses
+            technical_analyses, commercial_analyses,
+            tech_comparison, comm_comparison
         )
         
         # Salvar relatório
@@ -1271,15 +1848,9 @@ def analyze_proposals():
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
         
-        # Limpar variáveis grandes
-        del report, tr_analysis, technical_analyses, commercial_analyses
-        gc.collect()
-        
         return jsonify({'success': True, 'report_id': report_id})
         
     except Exception as e:
-        # Limpar memória em caso de erro
-        gc.collect()
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/download/<report_id>/<format>')
@@ -1289,52 +1860,182 @@ def download_report(report_id, format):
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
             return send_file(file_path, as_attachment=True, download_name='relatorio_analise.md')
         elif format == 'pdf':
-            # Gerar PDF simplificado
+            # Gerar PDF usando reportlab
             md_file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
             pdf_file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"relatorio_analise.pdf")
             
-            # Ler markdown
+            # Ler o conteúdo markdown
             with open(md_file_path, 'r', encoding='utf-8') as f:
                 markdown_content = f.read()
             
-            # Gerar PDF simples com reportlab
-            from reportlab.lib.pagesizes import A4
-            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-            from reportlab.lib.styles import getSampleStyleSheet
+            # Converter para PDF usando reportlab
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib.units import inch
+            from reportlab.lib import colors
             
+            # Criar documento PDF
             doc = SimpleDocTemplate(pdf_file_path, pagesize=A4, topMargin=1*inch)
             styles = getSampleStyleSheet()
             story = []
             
-            # Processar markdown de forma simples
+            # Estilos personalizados
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                spaceAfter=30,
+                textColor=colors.darkblue,
+                alignment=1  # Center
+            )
+            
+            heading_style = ParagraphStyle(
+                'CustomHeading',
+                parent=styles['Heading2'],
+                fontSize=14,
+                spaceAfter=12,
+                textColor=colors.darkblue,
+                spaceBefore=20
+            )
+            
+            subheading_style = ParagraphStyle(
+                'CustomSubHeading',
+                parent=styles['Heading3'],
+                fontSize=12,
+                spaceAfter=8,
+                textColor=colors.darkgreen,
+                spaceBefore=15
+            )
+            
+            normal_style = ParagraphStyle(
+                'CustomNormal',
+                parent=styles['Normal'],
+                fontSize=10,
+                spaceAfter=12,
+                alignment=0  # Left
+            )
+            
+            # Processar markdown para PDF
             lines = markdown_content.split('\n')
-            for line in lines[:200]:  # Limitar linhas para economizar memória
+            table_data = []
+            in_table = False
+            
+            for line in lines:
                 line = line.strip()
-                if line.startswith('# '):
-                    story.append(Paragraph(line[2:], styles['Title']))
+                if not line:
+                    if not in_table:
+                        story.append(Spacer(1, 12))
+                elif line.startswith('# '):
+                    if in_table and table_data:
+                        # Adicionar tabela antes de continuar
+                        table = Table(table_data)
+                        table.setStyle(TableStyle([
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0, 0), (-1, 0), 10),
+                            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                        ]))
+                        story.append(table)
+                        story.append(Spacer(1, 20))
+                        table_data = []
+                        in_table = False
+                    story.append(Paragraph(line[2:], title_style))
                 elif line.startswith('## '):
-                    story.append(Paragraph(line[3:], styles['Heading1']))
-                elif line.startswith('### '):
-                    story.append(Paragraph(line[4:], styles['Heading2']))
-                elif line and not line.startswith('*'):
-                    story.append(Paragraph(line, styles['Normal']))
-                
-                if len(story) > 0 and len(story) % 50 == 0:  # Garbage collect periodicamente
-                    gc.collect()
+                    if in_table and table_data:
+                        table = Table(table_data)
+                        table.setStyle(TableStyle([
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0, 0), (-1, 0), 10),
+                            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                        ]))
+                        story.append(table)
+                        story.append(Spacer(1, 20))
+                        table_data = []
+                        in_table = False
+                    story.append(Paragraph(line[3:], heading_style))
+                elif line.startswith('### ') or line.startswith('#### '):
+                    story.append(Paragraph(line[4:] if line.startswith('### ') else line[5:], subheading_style))
+                elif line.startswith('|') and '|' in line[1:]:
+                    # Tabela markdown
+                    if not in_table:
+                        in_table = True
+                        table_data = []
+                    
+                    # Processar linha da tabela
+                    cells = [cell.strip() for cell in line.split('|')[1:-1]]
+                    if not all(cell.startswith('-') for cell in cells):  # Ignorar linha separadora
+                        table_data.append(cells)
+                elif line.startswith('**') and line.endswith('**'):
+                    if in_table and table_data:
+                        table = Table(table_data)
+                        table.setStyle(TableStyle([
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0, 0), (-1, 0), 10),
+                            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                        ]))
+                        story.append(table)
+                        story.append(Spacer(1, 20))
+                        table_data = []
+                        in_table = False
+                    story.append(Paragraph(f"<b>{line[2:-2]}</b>", normal_style))
+                else:
+                    if in_table and table_data:
+                        table = Table(table_data)
+                        table.setStyle(TableStyle([
+                            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                            ('FONTSIZE', (0, 0), (-1, 0), 10),
+                            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                        ]))
+                        story.append(table)
+                        story.append(Spacer(1, 20))
+                        table_data = []
+                        in_table = False
+                    if line:
+                        story.append(Paragraph(line, normal_style))
             
+            # Adicionar tabela final se existir
+            if in_table and table_data:
+                table = Table(table_data)
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                story.append(table)
+            
+            # Construir PDF
             doc.build(story)
-            
-            # Limpar variáveis
-            del markdown_content, lines, story
-            gc.collect()
             
             return send_file(pdf_file_path, as_attachment=True, download_name='relatorio_analise.pdf')
         else:
             return jsonify({'error': 'Formato não suportado'}), 400
             
     except Exception as e:
-        gc.collect()
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
