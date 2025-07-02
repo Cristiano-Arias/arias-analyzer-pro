@@ -607,7 +607,10 @@ def analyze_tr_content(tr_text):
         'prazos': [],
         'criterios_avaliacao': [],
         'qualificacoes_exigidas': [],
-        'valores_estimados': []
+        'valores_estimados': [],
+        'especificacoes_tecnicas': [],
+        'metodologia_exigida': [],
+        'recursos_necessarios': []
     }
     
     # Dividir texto em seções
@@ -616,15 +619,17 @@ def analyze_tr_content(tr_text):
     
     # Padrões para identificar informações importantes
     prazo_patterns = [
-        r'prazo.*?(\d+).*?(dia|mês|ano)',
-        r'cronograma.*?(\d+).*?(dia|mês|ano)',
-        r'entrega.*?(\d+).*?(dia|mês|ano)'
+        r'prazo.*?(\d+).*?(dia|mês|ano|semana)',
+        r'cronograma.*?(\d+).*?(dia|mês|ano|semana)',
+        r'entrega.*?(\d+).*?(dia|mês|ano|semana)',
+        r'execução.*?(\d+).*?(dia|mês|ano|semana)'
     ]
     
     valor_patterns = [
         r'R\$\s*[\d.,]+',
         r'valor.*?R\$\s*[\d.,]+',
-        r'orçamento.*?R\$\s*[\d.,]+'
+        r'orçamento.*?R\$\s*[\d.,]+',
+        r'estimado.*?R\$\s*[\d.,]+'
     ]
     
     # Extrair objeto/resumo (primeiros parágrafos significativos)
@@ -633,7 +638,7 @@ def analyze_tr_content(tr_text):
         analysis['resumo'] = ' '.join(meaningful_paragraphs[:3])
         analysis['objeto'] = meaningful_paragraphs[0] if meaningful_paragraphs else ''
     
-    # Buscar prazos
+    # Buscar prazos com mais precisão
     for section in sections:
         for pattern in prazo_patterns:
             matches = re.findall(pattern, section.lower())
@@ -647,84 +652,332 @@ def analyze_tr_content(tr_text):
             analysis['valores_estimados'].extend(matches)
     
     # Identificar requisitos técnicos (seções que contêm palavras-chave)
-    tech_keywords = ['técnico', 'especificação', 'requisito', 'metodologia', 'equipamento', 'material']
+    tech_keywords = ['técnico', 'especificação', 'requisito', 'metodologia', 'equipamento', 'material', 'norma', 'padrão']
     for section in sections:
         if any(keyword in section.lower() for keyword in tech_keywords) and len(section.strip()) > 30:
             analysis['requisitos_tecnicos'].append(section.strip())
     
+    # Identificar especificações técnicas detalhadas
+    spec_keywords = ['especificação', 'norma', 'padrão', 'certificação', 'qualidade', 'performance']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in spec_keywords) and len(section.strip()) > 40:
+            analysis['especificacoes_tecnicas'].append(section.strip())
+    
+    # Identificar metodologia exigida
+    method_keywords = ['metodologia', 'método', 'processo', 'procedimento', 'abordagem', 'estratégia']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in method_keywords) and len(section.strip()) > 40:
+            analysis['metodologia_exigida'].append(section.strip())
+    
     # Identificar critérios de avaliação
-    eval_keywords = ['avaliação', 'critério', 'pontuação', 'peso', 'classificação']
+    eval_keywords = ['avaliação', 'critério', 'pontuação', 'peso', 'classificação', 'julgamento']
     for section in sections:
         if any(keyword in section.lower() for keyword in eval_keywords) and len(section.strip()) > 30:
             analysis['criterios_avaliacao'].append(section.strip())
     
     # Identificar qualificações exigidas
-    qual_keywords = ['qualificação', 'experiência', 'certificação', 'habilitação', 'comprovação']
+    qual_keywords = ['qualificação', 'experiência', 'certificação', 'habilitação', 'comprovação', 'atestado']
     for section in sections:
         if any(keyword in section.lower() for keyword in qual_keywords) and len(section.strip()) > 30:
             analysis['qualificacoes_exigidas'].append(section.strip())
     
+    # Identificar recursos necessários
+    resource_keywords = ['recurso', 'equipamento', 'ferramenta', 'material', 'insumo', 'mão de obra']
+    for section in sections:
+        if any(keyword in section.lower() for keyword in resource_keywords) and len(section.strip()) > 30:
+            analysis['recursos_necessarios'].append(section.strip())
+    
     return analysis
 
-def analyze_technical_proposal(proposal_text, company_name):
-    """Analisa uma proposta técnica e extrai informações estruturadas"""
+def analyze_technical_proposal_detailed(proposal_text, company_name):
+    """Análise técnica detalhada e aprofundada de uma proposta"""
     analysis = {
         'empresa': company_name,
-        'metodologia': '',
-        'cronograma': [],
-        'equipe': [],
-        'equipamentos': [],
-        'materiais': [],
-        'diferenciais': [],
+        'metodologia': {
+            'descricao': '',
+            'fases_identificadas': [],
+            'ferramentas_mencionadas': [],
+            'abordagem_qualitativa': '',
+            'aderencia_tr': 0
+        },
+        'cronograma': {
+            'prazo_total': '',
+            'marcos_principais': [],
+            'fases_detalhadas': [],
+            'recursos_por_fase': [],
+            'viabilidade': ''
+        },
+        'equipe_tecnica': {
+            'coordenador': '',
+            'especialistas': [],
+            'qualificacoes': [],
+            'experiencia_relevante': [],
+            'adequacao_projeto': ''
+        },
+        'recursos_tecnicos': {
+            'equipamentos': [],
+            'materiais': [],
+            'tecnologias': [],
+            'inovacoes': []
+        },
+        'experiencia_comprovada': {
+            'projetos_similares': [],
+            'referencias': [],
+            'certificacoes': [],
+            'cases_sucesso': []
+        },
+        'diferenciais_competitivos': [],
+        'riscos_identificados': [],
         'pontos_fortes': [],
-        'pontos_fracos': []
+        'pontos_fracos': [],
+        'gaps_identificados': [],
+        'score_detalhado': {
+            'metodologia': 0,
+            'cronograma': 0,
+            'equipe': 0,
+            'recursos': 0,
+            'experiencia': 0
+        }
     }
     
     sections = proposal_text.split('\n')
     
-    # Padrões para identificar diferentes seções
-    metodologia_keywords = ['metodologia', 'método', 'abordagem', 'estratégia', 'processo']
-    cronograma_keywords = ['cronograma', 'prazo', 'etapa', 'fase', 'período']
-    equipe_keywords = ['equipe', 'profissional', 'responsável', 'coordenador', 'especialista']
-    equipamento_keywords = ['equipamento', 'ferramenta', 'instrumento', 'máquina']
-    material_keywords = ['material', 'insumo', 'produto', 'componente']
-    
-    # Extrair metodologia (parágrafos que contêm palavras-chave de metodologia)
+    # Análise de Metodologia Detalhada
+    metodologia_keywords = ['metodologia', 'método', 'abordagem', 'estratégia', 'processo', 'procedimento']
     metodologia_sections = []
+    
     for section in sections:
         if any(keyword in section.lower() for keyword in metodologia_keywords) and len(section.strip()) > 50:
             metodologia_sections.append(section.strip())
     
-    analysis['metodologia'] = ' '.join(metodologia_sections[:2]) if metodologia_sections else 'Metodologia não claramente identificada'
+    if metodologia_sections:
+        analysis['metodologia']['descricao'] = ' '.join(metodologia_sections[:2])
+        
+        # Identificar fases da metodologia
+        fase_patterns = [
+            r'fase\s*(\d+)',
+            r'etapa\s*(\d+)',
+            r'passo\s*(\d+)',
+            r'estágio\s*(\d+)'
+        ]
+        
+        for section in metodologia_sections:
+            for pattern in fase_patterns:
+                matches = re.findall(pattern, section.lower())
+                for match in matches:
+                    analysis['metodologia']['fases_identificadas'].append(f"Fase {match}")
+        
+        # Identificar ferramentas mencionadas
+        ferramenta_keywords = ['ferramenta', 'software', 'sistema', 'plataforma', 'tecnologia']
+        for section in metodologia_sections:
+            for keyword in ferramenta_keywords:
+                if keyword in section.lower():
+                    # Extrair contexto da ferramenta
+                    words = section.split()
+                    for i, word in enumerate(words):
+                        if keyword in word.lower() and i < len(words) - 1:
+                            analysis['metodologia']['ferramentas_mencionadas'].append(f"{word} {words[i+1]}")
+        
+        # Avaliar aderência (básico)
+        if len(metodologia_sections) >= 2:
+            analysis['metodologia']['aderencia_tr'] = 80
+        elif len(metodologia_sections) == 1:
+            analysis['metodologia']['aderencia_tr'] = 60
+        else:
+            analysis['metodologia']['aderencia_tr'] = 20
+        
+        analysis['score_detalhado']['metodologia'] = analysis['metodologia']['aderencia_tr']
+    else:
+        analysis['metodologia']['descricao'] = 'Metodologia não claramente identificada ou apresentada de forma insuficiente'
+        analysis['gaps_identificados'].append('Metodologia não detalhada adequadamente')
+        analysis['score_detalhado']['metodologia'] = 10
     
-    # Extrair cronograma
+    # Análise de Cronograma Detalhada
+    cronograma_keywords = ['cronograma', 'prazo', 'etapa', 'fase', 'período', 'duração', 'tempo']
+    cronograma_sections = []
+    
     for section in sections:
         if any(keyword in section.lower() for keyword in cronograma_keywords):
-            # Buscar por padrões de tempo
-            time_patterns = re.findall(r'(\d+)\s*(dia|semana|mês|ano)', section.lower())
-            for time_match in time_patterns:
-                analysis['cronograma'].append(f"{time_match[0]} {time_match[1]}")
+            cronograma_sections.append(section.strip())
     
-    # Extrair equipe
+    # Extrair prazos específicos
+    time_patterns = [
+        r'(\d+)\s*(dia|semana|mês|ano)',
+        r'(\d+)\s*a\s*(\d+)\s*(dia|semana|mês|ano)',
+        r'prazo.*?(\d+).*?(dia|semana|mês|ano)'
+    ]
+    
+    for section in cronograma_sections:
+        for pattern in time_patterns:
+            matches = re.findall(pattern, section.lower())
+            for match in matches:
+                if len(match) == 2:
+                    analysis['cronograma']['marcos_principais'].append(f"{match[0]} {match[1]}")
+                elif len(match) == 4:
+                    analysis['cronograma']['marcos_principais'].append(f"{match[0]} a {match[1]} {match[2]}")
+    
+    # Identificar fases detalhadas do cronograma
+    for section in cronograma_sections:
+        if len(section) > 100:  # Seções mais detalhadas
+            analysis['cronograma']['fases_detalhadas'].append(section[:200] + "...")
+    
+    # Avaliar viabilidade do cronograma
+    if analysis['cronograma']['marcos_principais']:
+        analysis['cronograma']['viabilidade'] = 'Cronograma apresentado com marcos definidos'
+        analysis['score_detalhado']['cronograma'] = 75
+    elif cronograma_sections:
+        analysis['cronograma']['viabilidade'] = 'Cronograma mencionado mas sem detalhamento adequado'
+        analysis['score_detalhado']['cronograma'] = 40
+    else:
+        analysis['cronograma']['viabilidade'] = 'Cronograma não apresentado ou insuficiente'
+        analysis['gaps_identificados'].append('Cronograma não detalhado')
+        analysis['score_detalhado']['cronograma'] = 10
+    
+    # Análise de Equipe Técnica Detalhada
+    equipe_keywords = ['equipe', 'profissional', 'responsável', 'coordenador', 'especialista', 'técnico', 'engenheiro']
+    equipe_sections = []
+    
     for section in sections:
         if any(keyword in section.lower() for keyword in equipe_keywords) and len(section.strip()) > 20:
-            analysis['equipe'].append(section.strip())
+            equipe_sections.append(section.strip())
     
-    # Extrair equipamentos
-    for section in sections:
-        if any(keyword in section.lower() for keyword in equipamento_keywords) and len(section.strip()) > 20:
-            analysis['equipamentos'].append(section.strip())
+    # Identificar coordenador/responsável técnico
+    coord_keywords = ['coordenador', 'responsável técnico', 'gerente', 'líder']
+    for section in equipe_sections:
+        for keyword in coord_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['coordenador'] = section[:150] + "..."
+                break
     
-    # Extrair materiais
-    for section in sections:
-        if any(keyword in section.lower() for keyword in material_keywords) and len(section.strip()) > 20:
-            analysis['materiais'].append(section.strip())
+    # Identificar especialistas
+    espec_keywords = ['especialista', 'expert', 'consultor', 'profissional especializado']
+    for section in equipe_sections:
+        for keyword in espec_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['especialistas'].append(section[:100] + "...")
     
-    # Identificar pontos fortes (seções com palavras positivas)
-    positive_keywords = ['experiência', 'qualificado', 'certificado', 'especializado', 'inovador', 'eficiente']
+    # Identificar qualificações
+    qual_keywords = ['qualificação', 'formação', 'certificação', 'experiência', 'graduação', 'pós-graduação']
+    for section in equipe_sections:
+        for keyword in qual_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['qualificacoes'].append(section[:120] + "...")
+    
+    # Identificar experiência relevante
+    exp_keywords = ['experiência', 'projeto similar', 'case', 'trabalho anterior', 'histórico']
+    for section in equipe_sections:
+        for keyword in exp_keywords:
+            if keyword in section.lower():
+                analysis['equipe_tecnica']['experiencia_relevante'].append(section[:120] + "...")
+    
+    # Avaliar adequação da equipe
+    equipe_score = 0
+    if analysis['equipe_tecnica']['coordenador']:
+        equipe_score += 25
+    if analysis['equipe_tecnica']['especialistas']:
+        equipe_score += 25
+    if analysis['equipe_tecnica']['qualificacoes']:
+        equipe_score += 25
+    if analysis['equipe_tecnica']['experiencia_relevante']:
+        equipe_score += 25
+    
+    analysis['score_detalhado']['equipe'] = equipe_score
+    
+    if equipe_score >= 75:
+        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe bem estruturada e qualificada'
+    elif equipe_score >= 50:
+        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe adequada com algumas lacunas'
+    else:
+        analysis['equipe_tecnica']['adequacao_projeto'] = 'Equipe insuficientemente detalhada'
+        analysis['gaps_identificados'].append('Detalhamento insuficiente da equipe técnica')
+    
+    # Análise de Recursos Técnicos
+    recurso_keywords = ['equipamento', 'ferramenta', 'material', 'recurso', 'tecnologia', 'software', 'hardware']
+    
     for section in sections:
-        if any(keyword in section.lower() for keyword in positive_keywords) and len(section.strip()) > 30:
-            analysis['pontos_fortes'].append(section.strip())
+        for keyword in recurso_keywords:
+            if keyword in section.lower() and len(section.strip()) > 30:
+                if 'equipamento' in keyword or 'ferramenta' in keyword:
+                    analysis['recursos_tecnicos']['equipamentos'].append(section[:100] + "...")
+                elif 'material' in keyword or 'insumo' in keyword:
+                    analysis['recursos_tecnicos']['materiais'].append(section[:100] + "...")
+                elif 'tecnologia' in keyword or 'software' in keyword:
+                    analysis['recursos_tecnicos']['tecnologias'].append(section[:100] + "...")
+    
+    # Avaliar recursos
+    recursos_score = 0
+    if analysis['recursos_tecnicos']['equipamentos']:
+        recursos_score += 35
+    if analysis['recursos_tecnicos']['materiais']:
+        recursos_score += 35
+    if analysis['recursos_tecnicos']['tecnologias']:
+        recursos_score += 30
+    
+    analysis['score_detalhado']['recursos'] = recursos_score
+    
+    # Análise de Experiência Comprovada
+    exp_keywords = ['projeto similar', 'experiência', 'referência', 'atestado', 'certificação', 'case']
+    
+    for section in sections:
+        for keyword in exp_keywords:
+            if keyword in section.lower() and len(section.strip()) > 40:
+                if 'projeto' in keyword or 'case' in keyword:
+                    analysis['experiencia_comprovada']['projetos_similares'].append(section[:150] + "...")
+                elif 'referência' in keyword or 'atestado' in keyword:
+                    analysis['experiencia_comprovada']['referencias'].append(section[:150] + "...")
+                elif 'certificação' in keyword:
+                    analysis['experiencia_comprovada']['certificacoes'].append(section[:150] + "...")
+    
+    # Avaliar experiência
+    exp_score = 0
+    if analysis['experiencia_comprovada']['projetos_similares']:
+        exp_score += 40
+    if analysis['experiencia_comprovada']['referencias']:
+        exp_score += 30
+    if analysis['experiencia_comprovada']['certificacoes']:
+        exp_score += 30
+    
+    analysis['score_detalhado']['experiencia'] = exp_score
+    
+    # Identificar Diferenciais Competitivos
+    diferencial_keywords = ['diferencial', 'inovação', 'vantagem', 'exclusivo', 'único', 'pioneiro']
+    for section in sections:
+        for keyword in diferencial_keywords:
+            if keyword in section.lower() and len(section.strip()) > 40:
+                analysis['diferenciais_competitivos'].append(section[:120] + "...")
+    
+    # Identificar Riscos
+    risco_keywords = ['risco', 'problema', 'dificuldade', 'limitação', 'restrição']
+    for section in sections:
+        for keyword in risco_keywords:
+            if keyword in section.lower() and len(section.strip()) > 30:
+                analysis['riscos_identificados'].append(section[:100] + "...")
+    
+    # Calcular Pontos Fortes e Fracos baseado nos scores
+    if analysis['score_detalhado']['metodologia'] >= 70:
+        analysis['pontos_fortes'].append('Metodologia bem estruturada e detalhada')
+    else:
+        analysis['pontos_fracos'].append('Metodologia insuficientemente detalhada')
+    
+    if analysis['score_detalhado']['cronograma'] >= 70:
+        analysis['pontos_fortes'].append('Cronograma bem definido com marcos claros')
+    else:
+        analysis['pontos_fracos'].append('Cronograma não adequadamente apresentado')
+    
+    if analysis['score_detalhado']['equipe'] >= 70:
+        analysis['pontos_fortes'].append('Equipe técnica qualificada e bem estruturada')
+    else:
+        analysis['pontos_fracos'].append('Equipe técnica insuficientemente detalhada')
+    
+    if analysis['score_detalhado']['recursos'] >= 70:
+        analysis['pontos_fortes'].append('Recursos técnicos adequados e bem especificados')
+    else:
+        analysis['pontos_fracos'].append('Recursos técnicos não adequadamente especificados')
+    
+    if analysis['score_detalhado']['experiencia'] >= 70:
+        analysis['pontos_fortes'].append('Experiência comprovada em projetos similares')
+    else:
+        analysis['pontos_fracos'].append('Experiência em projetos similares não comprovada')
     
     return analysis
 
@@ -741,12 +994,14 @@ def analyze_commercial_proposal(proposal_text, company_name, cnpj):
         'observacoes': []
     }
     
-    # Buscar preços
+    # Buscar preços com padrões mais abrangentes
     price_patterns = [
         r'R\$\s*[\d.,]+',
         r'total.*?R\$\s*[\d.,]+',
         r'valor.*?R\$\s*[\d.,]+',
-        r'preço.*?R\$\s*[\d.,]+'
+        r'preço.*?R\$\s*[\d.,]+',
+        r'global.*?R\$\s*[\d.,]+',
+        r'[\d.,]+\s*reais'
     ]
     
     prices_found = []
@@ -755,11 +1010,46 @@ def analyze_commercial_proposal(proposal_text, company_name, cnpj):
         prices_found.extend(matches)
     
     if prices_found:
-        # Assumir que o maior valor é o preço total
-        analysis['preco_total'] = max(prices_found, key=lambda x: float(re.sub(r'[^\d,]', '', x).replace(',', '.')))
+        # Limpar e converter preços para comparação
+        cleaned_prices = []
+        for price in prices_found:
+            # Extrair apenas números e vírgulas/pontos
+            clean_price = re.sub(r'[^\d,.]', '', price)
+            if clean_price:
+                try:
+                    # Converter para float para comparação
+                    if ',' in clean_price and '.' in clean_price:
+                        # Formato brasileiro: 1.234.567,89
+                        clean_price = clean_price.replace('.', '').replace(',', '.')
+                    elif ',' in clean_price:
+                        # Pode ser decimal brasileiro: 1234,89
+                        clean_price = clean_price.replace(',', '.')
+                    
+                    float_value = float(clean_price)
+                    cleaned_prices.append((price, float_value))
+                except:
+                    continue
+        
+        if cleaned_prices:
+            # Assumir que o maior valor é o preço total
+            analysis['preco_total'] = max(cleaned_prices, key=lambda x: x[1])[0]
+    
+    # Buscar CNPJ com padrão mais específico
+    cnpj_patterns = [
+        r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}',
+        r'\d{14}',
+        r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+        r'CNPJ.*?(\d{14})'
+    ]
+    
+    for pattern in cnpj_patterns:
+        matches = re.findall(pattern, proposal_text)
+        if matches:
+            analysis['cnpj'] = matches[0]
+            break
     
     # Buscar condições de pagamento
-    payment_keywords = ['pagamento', 'parcela', 'à vista', 'prazo']
+    payment_keywords = ['pagamento', 'parcela', 'à vista', 'prazo', 'condição']
     sections = proposal_text.split('\n')
     
     for section in sections:
@@ -768,7 +1058,12 @@ def analyze_commercial_proposal(proposal_text, company_name, cnpj):
             break
     
     # Buscar BDI
-    bdi_patterns = [r'bdi.*?(\d+[,.]?\d*)%?', r'benefício.*?(\d+[,.]?\d*)%?']
+    bdi_patterns = [
+        r'bdi.*?(\d+[,.]?\d*)%?',
+        r'benefício.*?(\d+[,.]?\d*)%?',
+        r'despesas.*?indiretas.*?(\d+[,.]?\d*)%?'
+    ]
+    
     for pattern in bdi_patterns:
         matches = re.findall(pattern, proposal_text.lower())
         if matches:
@@ -778,7 +1073,8 @@ def analyze_commercial_proposal(proposal_text, company_name, cnpj):
     # Buscar prazos
     prazo_patterns = [
         r'prazo.*?(\d+).*?(dia|mês|ano)',
-        r'entrega.*?(\d+).*?(dia|mês|ano)'
+        r'entrega.*?(\d+).*?(dia|mês|ano)',
+        r'execução.*?(\d+).*?(dia|mês|ano)'
     ]
     
     for pattern in prazo_patterns:
@@ -788,79 +1084,105 @@ def analyze_commercial_proposal(proposal_text, company_name, cnpj):
     
     return analysis
 
-def generate_comparative_analysis(tr_analysis, technical_proposals, commercial_proposals):
-    """Gera análise comparativa entre propostas e TR"""
+def generate_detailed_comparative_analysis(tr_analysis, technical_analyses, commercial_analyses):
+    """Gera análise comparativa detalhada entre propostas e TR"""
     
-    # Análise técnica comparativa
+    # Análise técnica comparativa detalhada
     tech_comparison = {
-        'aderencia_tr': {},
-        'pontos_fortes_por_empresa': {},
-        'pontos_fracos_por_empresa': {},
-        'recomendacoes': []
+        'matriz_comparacao': {},
+        'ranking_tecnico': [],
+        'analise_gaps': {},
+        'recomendacoes_tecnicas': [],
+        'riscos_por_empresa': {}
     }
     
     # Análise comercial comparativa
     comm_comparison = {
         'ranking_precos': [],
-        'melhor_condicao_pagamento': '',
-        'analise_bdi': {},
-        'recomendacoes': []
+        'analise_custo_beneficio': {},
+        'condicoes_comparadas': {},
+        'recomendacoes_comerciais': []
     }
     
-    # Comparar propostas técnicas
-    for proposal in technical_proposals:
-        empresa = proposal['empresa']
+    # Criar matriz de comparação técnica
+    criterios_tecnicos = ['metodologia', 'cronograma', 'equipe', 'recursos', 'experiencia']
+    
+    for analysis in technical_analyses:
+        empresa = analysis['empresa']
+        scores = analysis['score_detalhado']
         
-        # Verificar aderência aos requisitos do TR
-        aderencia_score = 0
-        if proposal.get('metodologia'):
-            aderencia_score += 25
-        if proposal.get('cronograma'):
-            aderencia_score += 25
-        if proposal.get('equipe'):
-            aderencia_score += 25
-        if proposal.get('equipamentos') or proposal.get('materiais'):
-            aderencia_score += 25
+        tech_comparison['matriz_comparacao'][empresa] = scores
         
-        tech_comparison['aderencia_tr'][empresa] = f"{aderencia_score}%"
-        tech_comparison['pontos_fortes_por_empresa'][empresa] = proposal.get('pontos_fortes', [])
+        # Calcular score total
+        score_total = sum(scores.values()) / len(scores)
+        tech_comparison['ranking_tecnico'].append((empresa, score_total))
         
-        # Identificar pontos fracos baseado no que está faltando
-        pontos_fracos = []
-        if not proposal.get('metodologia') or 'não claramente identificada' in proposal.get('metodologia', ''):
-            pontos_fracos.append("Metodologia não claramente definida")
-        if not proposal.get('cronograma'):
-            pontos_fracos.append("Cronograma não apresentado")
-        if not proposal.get('equipe'):
-            pontos_fracos.append("Equipe técnica não detalhada")
+        # Análise de gaps
+        gaps = analysis['gaps_identificados']
+        tech_comparison['analise_gaps'][empresa] = gaps
         
-        tech_comparison['pontos_fracos_por_empresa'][empresa] = pontos_fracos
+        # Riscos identificados
+        riscos = analysis['riscos_identificados']
+        tech_comparison['riscos_por_empresa'][empresa] = riscos
+    
+    # Ordenar ranking técnico
+    tech_comparison['ranking_tecnico'].sort(key=lambda x: x[1], reverse=True)
+    
+    # Gerar recomendações técnicas
+    if tech_comparison['ranking_tecnico']:
+        melhor_empresa = tech_comparison['ranking_tecnico'][0][0]
+        tech_comparison['recomendacoes_tecnicas'].append(
+            f"Empresa {melhor_empresa} apresentou o melhor desempenho técnico geral"
+        )
+        
+        # Recomendações específicas por critério
+        for criterio in criterios_tecnicos:
+            melhor_criterio = max(technical_analyses, 
+                                key=lambda x: x['score_detalhado'].get(criterio, 0))
+            tech_comparison['recomendacoes_tecnicas'].append(
+                f"Em {criterio}: {melhor_criterio['empresa']} se destaca"
+            )
     
     # Comparar propostas comerciais
     precos_empresas = []
-    for proposal in commercial_proposals:
-        if proposal.get('preco_total'):
+    for analysis in commercial_analyses:
+        if analysis.get('preco_total'):
             # Extrair valor numérico para comparação
-            valor_str = re.sub(r'[^\d,]', '', proposal['preco_total']).replace(',', '.')
+            valor_str = re.sub(r'[^\d,.]', '', analysis['preco_total'])
             try:
+                if ',' in valor_str and '.' in valor_str:
+                    valor_str = valor_str.replace('.', '').replace(',', '.')
+                elif ',' in valor_str:
+                    valor_str = valor_str.replace(',', '.')
+                
                 valor_num = float(valor_str)
-                precos_empresas.append((proposal['empresa'], proposal['preco_total'], valor_num))
+                precos_empresas.append((analysis['empresa'], analysis['preco_total'], valor_num))
             except:
-                precos_empresas.append((proposal['empresa'], proposal['preco_total'], 0))
+                precos_empresas.append((analysis['empresa'], analysis['preco_total'], 0))
     
     # Ordenar por preço (menor para maior)
     precos_empresas.sort(key=lambda x: x[2])
     comm_comparison['ranking_precos'] = [(empresa, preco_str) for empresa, preco_str, _ in precos_empresas]
     
-    # Análise de BDI
-    for proposal in commercial_proposals:
-        if proposal.get('bdi'):
-            comm_comparison['analise_bdi'][proposal['empresa']] = proposal['bdi']
+    # Análise de custo-benefício
+    for i, (empresa_tech, score_tech) in enumerate(tech_comparison['ranking_tecnico']):
+        # Encontrar posição no ranking comercial
+        pos_comercial = next((j for j, (emp_comm, _) in enumerate(comm_comparison['ranking_precos']) 
+                            if emp_comm == empresa_tech), len(comm_comparison['ranking_precos']))
+        
+        # Calcular índice custo-benefício (quanto menor, melhor)
+        indice_cb = (i + 1) + (pos_comercial + 1)  # Posição técnica + posição comercial
+        comm_comparison['analise_custo_beneficio'][empresa_tech] = {
+            'posicao_tecnica': i + 1,
+            'posicao_comercial': pos_comercial + 1,
+            'indice_custo_beneficio': indice_cb,
+            'score_tecnico': score_tech
+        }
     
     return tech_comparison, comm_comparison
 
 def generate_enhanced_report(project_name, project_description, tr_analysis, technical_analyses, commercial_analyses, tech_comparison, comm_comparison):
-    """Gera relatório aprimorado com análise de IA"""
+    """Gera relatório aprimorado com análise técnica detalhada"""
     
     current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
     
@@ -889,7 +1211,21 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
     else:
         report += "Requisitos técnicos não claramente identificados no TR.\n\n"
     
-    report += "### Prazos Estabelecidos\n"
+    report += "### Especificações Técnicas Exigidas\n"
+    if tr_analysis.get('especificacoes_tecnicas'):
+        for i, spec in enumerate(tr_analysis['especificacoes_tecnicas'][:3], 1):
+            report += f"**{i}.** {spec[:200]}...\n\n"
+    else:
+        report += "Especificações técnicas não claramente definidas no TR.\n\n"
+    
+    report += "### Metodologia Exigida pelo TR\n"
+    if tr_analysis.get('metodologia_exigida'):
+        for method in tr_analysis['metodologia_exigida'][:2]:
+            report += f"- {method[:150]}...\n"
+    else:
+        report += "Metodologia específica não exigida ou não claramente definida no TR.\n"
+    
+    report += "\n### Prazos Estabelecidos\n"
     if tr_analysis.get('prazos'):
         for prazo in tr_analysis['prazos']:
             report += f"- {prazo}\n"
@@ -909,58 +1245,150 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 
 ## 🔧 BLOCO 2: EQUALIZAÇÃO DAS PROPOSTAS TÉCNICAS
 
-### Resumo Comparativo de Aderência ao TR
+### Matriz de Comparação Técnica Detalhada
 """
     
-    if tech_comparison.get('aderencia_tr'):
-        report += "| Empresa | Aderência ao TR | Status |\n"
-        report += "|---------|-----------------|--------|\n"
-        for empresa, aderencia in tech_comparison['aderencia_tr'].items():
-            status = "✅ Boa" if int(aderencia.replace('%', '')) >= 75 else "⚠️ Parcial" if int(aderencia.replace('%', '')) >= 50 else "❌ Insuficiente"
-            report += f"| {empresa} | {aderencia} | {status} |\n"
+    if tech_comparison.get('matriz_comparacao'):
+        report += "| Empresa | Metodologia | Cronograma | Equipe | Recursos | Experiência | Score Total |\n"
+        report += "|---------|-------------|------------|--------|----------|-------------|-------------|\n"
+        
+        for empresa, score_total in tech_comparison['ranking_tecnico']:
+            scores = tech_comparison['matriz_comparacao'][empresa]
+            score_medio = score_total
+            
+            report += f"| {empresa} | {scores.get('metodologia', 0)}% | {scores.get('cronograma', 0)}% | {scores.get('equipe', 0)}% | {scores.get('recursos', 0)}% | {scores.get('experiencia', 0)}% | **{score_medio:.1f}%** |\n"
+        
         report += "\n"
     
     # Análise detalhada por empresa
     for analysis in technical_analyses:
         empresa = analysis['empresa']
         report += f"""
-### 📋 Análise Detalhada: {empresa}
+### 📋 Análise Técnica Detalhada: {empresa}
 
-**Metodologia Proposta:**
-{analysis.get('metodologia', 'Não apresentada ou não identificada')}
+#### 🔬 Metodologia Proposta
+**Descrição:** {analysis['metodologia']['descricao']}
 
-**Cronograma:**
+**Fases Identificadas:**
 """
-        if analysis.get('cronograma'):
-            for item in analysis['cronograma']:
-                report += f"- {item}\n"
+        if analysis['metodologia']['fases_identificadas']:
+            for fase in analysis['metodologia']['fases_identificadas']:
+                report += f"- {fase}\n"
         else:
-            report += "Cronograma não apresentado de forma clara.\n"
+            report += "Fases não claramente identificadas.\n"
         
-        report += "\n**Equipe Técnica:**\n"
-        if analysis.get('equipe'):
-            for item in analysis['equipe'][:3]:
-                report += f"- {item[:100]}...\n"
+        report += "\n**Ferramentas e Tecnologias Mencionadas:**\n"
+        if analysis['metodologia']['ferramentas_mencionadas']:
+            for ferramenta in analysis['metodologia']['ferramentas_mencionadas']:
+                report += f"- {ferramenta}\n"
         else:
-            report += "Equipe técnica não detalhada.\n"
+            report += "Ferramentas específicas não mencionadas.\n"
         
-        report += "\n**Pontos Fortes:**\n"
-        pontos_fortes = tech_comparison.get('pontos_fortes_por_empresa', {}).get(empresa, [])
-        if pontos_fortes:
-            for ponto in pontos_fortes[:3]:
-                report += f"✅ {ponto[:100]}...\n"
+        report += f"\n**Aderência ao TR:** {analysis['metodologia']['aderencia_tr']}%\n"
+        
+        report += "\n#### ⏰ Cronograma e Prazos\n"
+        report += f"**Viabilidade:** {analysis['cronograma']['viabilidade']}\n\n"
+        
+        report += "**Marcos Principais:**\n"
+        if analysis['cronograma']['marcos_principais']:
+            for marco in analysis['cronograma']['marcos_principais']:
+                report += f"- {marco}\n"
+        else:
+            report += "Marcos não claramente definidos.\n"
+        
+        report += "\n**Fases Detalhadas:**\n"
+        if analysis['cronograma']['fases_detalhadas']:
+            for fase in analysis['cronograma']['fases_detalhadas'][:2]:
+                report += f"- {fase}\n"
+        else:
+            report += "Detalhamento de fases não apresentado.\n"
+        
+        report += "\n#### 👥 Equipe Técnica\n"
+        report += f"**Adequação ao Projeto:** {analysis['equipe_tecnica']['adequacao_projeto']}\n\n"
+        
+        if analysis['equipe_tecnica']['coordenador']:
+            report += f"**Coordenador/Responsável Técnico:** {analysis['equipe_tecnica']['coordenador']}\n\n"
+        
+        report += "**Especialistas:**\n"
+        if analysis['equipe_tecnica']['especialistas']:
+            for esp in analysis['equipe_tecnica']['especialistas'][:3]:
+                report += f"- {esp}\n"
+        else:
+            report += "Especialistas não claramente identificados.\n"
+        
+        report += "\n**Qualificações:**\n"
+        if analysis['equipe_tecnica']['qualificacoes']:
+            for qual in analysis['equipe_tecnica']['qualificacoes'][:3]:
+                report += f"- {qual}\n"
+        else:
+            report += "Qualificações não detalhadas.\n"
+        
+        report += "\n#### 🛠️ Recursos Técnicos\n"
+        
+        report += "**Equipamentos:**\n"
+        if analysis['recursos_tecnicos']['equipamentos']:
+            for equip in analysis['recursos_tecnicos']['equipamentos'][:3]:
+                report += f"- {equip}\n"
+        else:
+            report += "Equipamentos não especificados.\n"
+        
+        report += "\n**Tecnologias:**\n"
+        if analysis['recursos_tecnicos']['tecnologias']:
+            for tech in analysis['recursos_tecnicos']['tecnologias'][:3]:
+                report += f"- {tech}\n"
+        else:
+            report += "Tecnologias não especificadas.\n"
+        
+        report += "\n#### 🏆 Experiência Comprovada\n"
+        
+        report += "**Projetos Similares:**\n"
+        if analysis['experiencia_comprovada']['projetos_similares']:
+            for proj in analysis['experiencia_comprovada']['projetos_similares'][:2]:
+                report += f"- {proj}\n"
+        else:
+            report += "Projetos similares não comprovados.\n"
+        
+        report += "\n**Certificações:**\n"
+        if analysis['experiencia_comprovada']['certificacoes']:
+            for cert in analysis['experiencia_comprovada']['certificacoes'][:2]:
+                report += f"- {cert}\n"
+        else:
+            report += "Certificações não apresentadas.\n"
+        
+        report += "\n#### ✅ Pontos Fortes\n"
+        if analysis['pontos_fortes']:
+            for ponto in analysis['pontos_fortes']:
+                report += f"✅ {ponto}\n"
         else:
             report += "Pontos fortes não claramente identificados.\n"
         
-        report += "\n**Pontos de Atenção:**\n"
-        pontos_fracos = tech_comparison.get('pontos_fracos_por_empresa', {}).get(empresa, [])
-        if pontos_fracos:
-            for ponto in pontos_fracos:
+        report += "\n#### ⚠️ Pontos de Atenção e Gaps\n"
+        if analysis['pontos_fracos']:
+            for ponto in analysis['pontos_fracos']:
                 report += f"⚠️ {ponto}\n"
+        
+        if analysis['gaps_identificados']:
+            for gap in analysis['gaps_identificados']:
+                report += f"❌ {gap}\n"
+        
+        if not analysis['pontos_fracos'] and not analysis['gaps_identificados']:
+            report += "Nenhum ponto de atenção crítico identificado.\n"
+        
+        report += "\n#### 🎯 Diferenciais Competitivos\n"
+        if analysis['diferenciais_competitivos']:
+            for diff in analysis['diferenciais_competitivos']:
+                report += f"🌟 {diff}\n"
         else:
-            report += "Nenhum ponto de atenção identificado.\n"
+            report += "Diferenciais competitivos não claramente apresentados.\n"
         
         report += "\n---\n"
+    
+    # Ranking técnico final
+    report += "\n### 🏆 Ranking Técnico Final\n"
+    if tech_comparison.get('ranking_tecnico'):
+        for i, (empresa, score) in enumerate(tech_comparison['ranking_tecnico'], 1):
+            emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
+            report += f"{emoji} **{i}º lugar:** {empresa} - Score: {score:.1f}%\n"
     
     report += f"""
 
@@ -970,21 +1398,14 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 """
     
     if comm_comparison.get('ranking_precos'):
-        report += "| Posição | Empresa | Preço Total | Diferença |\n"
-        report += "|---------|---------|-------------|----------|\n"
+        report += "| Posição | Empresa | Preço Total | Status |\n"
+        report += "|---------|---------|-------------|--------|\n"
         
-        precos = comm_comparison['ranking_precos']
-        menor_preco = None
-        
-        for i, (empresa, preco) in enumerate(precos, 1):
-            if i == 1:
-                menor_preco = preco
-                diferenca = "Menor preço"
-            else:
-                diferenca = "A calcular"
-            
+        for i, (empresa, preco) in enumerate(comm_comparison['ranking_precos'], 1):
             emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "📊"
-            report += f"| {emoji} {i}º | {empresa} | {preco} | {diferenca} |\n"
+            status = "Menor preço" if i == 1 else f"{i}º menor preço"
+            
+            report += f"| {emoji} {i}º | {empresa} | {preco} | {status} |\n"
         
         report += "\n"
     
@@ -992,7 +1413,7 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
     for analysis in commercial_analyses:
         empresa = analysis['empresa']
         report += f"""
-### 💼 Análise Comercial: {empresa}
+### 💼 Análise Comercial Detalhada: {empresa}
 
 **CNPJ:** {analysis.get('cnpj', 'Não informado')}
 **Preço Total:** {analysis.get('preco_total', 'Não identificado')}
@@ -1011,34 +1432,57 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
         
         report += "\n---\n"
     
+    # Análise de custo-benefício
+    report += "\n### 📊 Análise de Custo-Benefício\n"
+    if comm_comparison.get('analise_custo_beneficio'):
+        report += "| Empresa | Posição Técnica | Posição Comercial | Índice C/B | Recomendação |\n"
+        report += "|---------|-----------------|-------------------|------------|-------------|\n"
+        
+        # Ordenar por índice custo-benefício
+        cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
+                          key=lambda x: x[1]['indice_custo_beneficio'])
+        
+        for empresa, dados in cb_sorted:
+            indice = dados['indice_custo_beneficio']
+            recomendacao = "Excelente" if indice <= 4 else "Boa" if indice <= 6 else "Regular"
+            
+            report += f"| {empresa} | {dados['posicao_tecnica']}º | {dados['posicao_comercial']}º | {indice} | {recomendacao} |\n"
+        
+        report += "\n"
+    
     report += f"""
 
 ## 🎯 BLOCO 4: CONCLUSÃO E RECOMENDAÇÕES
 
-### Síntese da Análise
-
-**Aspecto Técnico:**
+### Síntese da Análise Técnica
 """
     
     # Identificar melhor proposta técnica
-    melhor_tecnica = ""
-    maior_aderencia = 0
+    if tech_comparison.get('ranking_tecnico'):
+        melhor_tecnica, score_tecnico = tech_comparison['ranking_tecnico'][0]
+        report += f"**Melhor Proposta Técnica:** {melhor_tecnica} (Score: {score_tecnico:.1f}%)\n\n"
+        
+        # Justificativa técnica
+        melhor_analysis = next((a for a in technical_analyses if a['empresa'] == melhor_tecnica), None)
+        if melhor_analysis:
+            report += "**Justificativa:**\n"
+            for ponto in melhor_analysis['pontos_fortes'][:3]:
+                report += f"- {ponto}\n"
     
-    for empresa, aderencia in tech_comparison.get('aderencia_tr', {}).items():
-        aderencia_num = int(aderencia.replace('%', ''))
-        if aderencia_num > maior_aderencia:
-            maior_aderencia = aderencia_num
-            melhor_tecnica = empresa
-    
-    if melhor_tecnica:
-        report += f"A empresa **{melhor_tecnica}** apresentou a melhor aderência técnica ao TR ({maior_aderencia}%).\n\n"
-    
-    report += "**Aspecto Comercial:**\n"
+    report += "\n### Síntese da Análise Comercial\n"
     if comm_comparison.get('ranking_precos'):
-        melhor_preco = comm_comparison['ranking_precos'][0]
-        report += f"A empresa **{melhor_preco[0]}** apresentou o menor preço: {melhor_preco[1]}.\n\n"
+        melhor_comercial = comm_comparison['ranking_precos'][0]
+        report += f"**Melhor Proposta Comercial:** {melhor_comercial[0]} - {melhor_comercial[1]}\n\n"
     
-    report += """### Recomendações Finais
+    # Recomendação de custo-benefício
+    if comm_comparison.get('analise_custo_beneficio'):
+        cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
+                          key=lambda x: x[1]['indice_custo_beneficio'])
+        melhor_cb = cb_sorted[0]
+        
+        report += f"**Melhor Custo-Benefício:** {melhor_cb[0]} (Índice: {melhor_cb[1]['indice_custo_beneficio']})\n\n"
+    
+    report += """### Recomendações Específicas
 
 **Para a Tomada de Decisão:**
 
@@ -1050,26 +1494,54 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 
 4. **Negociação:** Considerar possibilidade de negociação com as empresas melhor classificadas.
 
+5. **Visita Técnica:** Realizar visita às instalações das empresas finalistas para verificação in loco.
+
 ### Considerações Importantes
 
 - Esta análise foi realizada com base no conteúdo extraído dos documentos fornecidos.
 - Recomenda-se análise detalhada adicional por especialistas da área.
 - Verificar conformidade com a legislação de licitações aplicável.
+- Considerar aspectos qualitativos não capturados na análise automatizada.
 
 ---
 
 ### 📈 Resumo Executivo para Decisão
+"""
+    
+    # Resumo final
+    if tech_comparison.get('ranking_tecnico') and comm_comparison.get('ranking_precos'):
+        melhor_tecnica = tech_comparison['ranking_tecnico'][0][0]
+        melhor_comercial = comm_comparison['ranking_precos'][0][0]
+        
+        if comm_comparison.get('analise_custo_beneficio'):
+            cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
+                              key=lambda x: x[1]['indice_custo_beneficio'])
+            melhor_cb = cb_sorted[0][0]
+        else:
+            melhor_cb = 'A definir'
+        
+        report += f"""
+**Melhor Proposta Técnica:** {melhor_tecnica}
+**Melhor Proposta Comercial:** {melhor_comercial}
+**Melhor Custo-Benefício:** {melhor_cb}
 
-**Melhor Proposta Técnica:** {melhor_tecnica if melhor_tecnica else 'A definir'}
-**Melhor Proposta Comercial:** {comm_comparison['ranking_precos'][0][0] if comm_comparison.get('ranking_precos') else 'A definir'}
+**Recomendação Geral:** {'Empresa ' + melhor_cb + ' apresenta o melhor equilíbrio entre qualidade técnica e proposta comercial.' if melhor_cb != 'A definir' else 'Realizar análise conjunta dos aspectos técnicos e comerciais, considerando o melhor custo-benefício para o projeto.'}
+"""
+    else:
+        report += """
+**Melhor Proposta Técnica:** A definir
+**Melhor Proposta Comercial:** A definir
 
 **Recomendação Geral:** Realizar análise conjunta dos aspectos técnicos e comerciais, considerando o melhor custo-benefício para o projeto.
+"""
+    
+    report += f"""
 
 ---
 
-*Relatório gerado automaticamente pelo Proposal Analyzer Pro com Análise de IA*  
+*Relatório gerado automaticamente pelo Proposal Analyzer Pro com Análise de IA Avançada*  
 *Data: {current_time}*  
-*Versão: 2.0 - Enhanced AI Analysis*
+*Versão: 3.0 - Enhanced Technical Analysis*
 """
     
     return report
@@ -1113,8 +1585,8 @@ def analyze_proposals():
                 file.save(file_path)
                 content = extract_text_from_file(file_path)
                 
-                # Análise com IA
-                tech_analysis = analyze_technical_proposal(content, company)
+                # Análise técnica detalhada com IA
+                tech_analysis = analyze_technical_proposal_detailed(content, company)
                 technical_analyses.append(tech_analysis)
                 
                 technical_proposals.append({
@@ -1135,7 +1607,7 @@ def analyze_proposals():
                 file.save(file_path)
                 content = extract_text_from_file(file_path)
                 
-                # Análise com IA
+                # Análise comercial com IA
                 comm_analysis = analyze_commercial_proposal(content, company, cnpj)
                 commercial_analyses.append(comm_analysis)
                 
@@ -1145,8 +1617,8 @@ def analyze_proposals():
                     'content': content
                 })
         
-        # Gerar análise comparativa
-        tech_comparison, comm_comparison = generate_comparative_analysis(
+        # Gerar análise comparativa detalhada
+        tech_comparison, comm_comparison = generate_detailed_comparative_analysis(
             tr_analysis, technical_analyses, commercial_analyses
         )
         
@@ -1279,8 +1751,8 @@ def download_report(report_id, format):
                         table_data = []
                         in_table = False
                     story.append(Paragraph(line[3:], heading_style))
-                elif line.startswith('### '):
-                    story.append(Paragraph(line[4:], subheading_style))
+                elif line.startswith('### ') or line.startswith('#### '):
+                    story.append(Paragraph(line[4:] if line.startswith('### ') else line[5:], subheading_style))
                 elif line.startswith('|') and '|' in line[1:]:
                     # Tabela markdown
                     if not in_table:
