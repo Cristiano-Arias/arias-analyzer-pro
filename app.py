@@ -5,8 +5,6 @@ from flask import Flask, request, jsonify, send_file, render_template_string
 from flask_cors import CORS
 import PyPDF2
 import docx
-import pandas as pd
-import openpyxl
 import io
 import re
 from datetime import datetime
@@ -554,7 +552,7 @@ HTML_TEMPLATE = '''
 '''
 
 def extract_text_from_file(file_path):
-    """Extrai texto de diferentes tipos de arquivo, incluindo Excel"""
+    """Extrai texto de diferentes tipos de arquivo"""
     try:
         file_extension = os.path.splitext(file_path)[1].lower()
         
@@ -576,10 +574,6 @@ def extract_text_from_file(file_path):
         elif file_extension == '.txt':
             with open(file_path, 'r', encoding='utf-8') as file:
                 return file.read()
-        
-        elif file_extension in ['.xls', '.xlsx']:
-            # Processar arquivo Excel
-            return extract_excel_data(file_path)
         
         elif file_extension == '.zip':
             # Para arquivos ZIP, extrair e processar cada arquivo
@@ -603,47 +597,6 @@ def extract_text_from_file(file_path):
     
     except Exception as e:
         return f"Erro ao extrair texto: {str(e)}"
-
-def extract_excel_data(file_path):
-    """Extrai dados estruturados de arquivos Excel"""
-    try:
-        # Carregar o workbook
-        wb = openpyxl.load_workbook(file_path)
-        extracted_data = {
-            'sheets': wb.sheetnames,
-            'data': {}
-        }
-        
-        # Processar cada aba
-        for sheet_name in wb.sheetnames:
-            try:
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
-                
-                # Converter para texto estruturado
-                sheet_text = f"\n=== ABA: {sheet_name} ===\n"
-                
-                # Adicionar dados da planilha
-                for index, row in df.iterrows():
-                    row_text = " | ".join([str(cell) if pd.notna(cell) else "" for cell in row])
-                    if row_text.strip():  # Só adicionar linhas não vazias
-                        sheet_text += f"Linha {index + 1}: {row_text}\n"
-                
-                extracted_data['data'][sheet_name] = sheet_text
-                
-            except Exception as e:
-                extracted_data['data'][sheet_name] = f"Erro ao processar aba {sheet_name}: {str(e)}"
-        
-        # Combinar todos os dados em um texto
-        combined_text = f"ARQUIVO EXCEL: {os.path.basename(file_path)}\n"
-        combined_text += f"ABAS DISPONÍVEIS: {', '.join(extracted_data['sheets'])}\n\n"
-        
-        for sheet_name, sheet_data in extracted_data['data'].items():
-            combined_text += sheet_data + "\n"
-        
-        return combined_text
-        
-    except Exception as e:
-        return f"Erro ao processar arquivo Excel: {str(e)}"
 
 def analyze_tr_content(tr_text):
     """Analisa o conteúdo do Termo de Referência e extrai informações estruturadas"""
@@ -740,7 +693,6 @@ def analyze_technical_proposal_detailed(proposal_text, company_name):
     """Análise técnica detalhada e aprofundada de uma proposta"""
     analysis = {
         'empresa': company_name,
-        'cnpj': '',
         'metodologia': {
             'descricao': '',
             'fases_identificadas': [],
@@ -789,20 +741,6 @@ def analyze_technical_proposal_detailed(proposal_text, company_name):
     }
     
     sections = proposal_text.split('\n')
-    
-    # Extrair CNPJ com padrões mais robustos
-    cnpj_patterns = [
-        r'CNPJ[:\s]*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
-        r'CNPJ[:\s]*(\d{14})',
-        r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
-        r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})'
-    ]
-    
-    for pattern in cnpj_patterns:
-        matches = re.findall(pattern, proposal_text, re.IGNORECASE)
-        if matches:
-            analysis['cnpj'] = matches[0]
-            break
     
     # Análise de Metodologia Detalhada
     metodologia_keywords = ['metodologia', 'método', 'abordagem', 'estratégia', 'processo', 'procedimento']
@@ -1043,150 +981,8 @@ def analyze_technical_proposal_detailed(proposal_text, company_name):
     
     return analysis
 
-def analyze_commercial_proposal_excel(proposal_text, company_name, cnpj):
-    """Analisa uma proposta comercial incluindo dados de Excel"""
-    analysis = {
-        'empresa': company_name,
-        'cnpj': cnpj,
-        'preco_total': '',
-        'composicao_custos': {},
-        'condicoes_pagamento': '',
-        'prazos': [],
-        'bdi': '',
-        'observacoes': [],
-        'itens_servicos': [],
-        'detalhes_bdi': {}
-    }
-    
-    # Se o texto contém dados de Excel, processar de forma diferente
-    if "ARQUIVO EXCEL:" in proposal_text:
-        return analyze_excel_commercial_data(proposal_text, company_name, cnpj)
-    
-    # Processar como PDF normal
-    return analyze_commercial_proposal_pdf(proposal_text, company_name, cnpj)
-
-def analyze_excel_commercial_data(excel_text, company_name, cnpj):
-    """Analisa dados comerciais extraídos de Excel"""
-    analysis = {
-        'empresa': company_name,
-        'cnpj': cnpj,
-        'preco_total': '',
-        'composicao_custos': {},
-        'condicoes_pagamento': '',
-        'prazos': [],
-        'bdi': '',
-        'observacoes': [],
-        'itens_servicos': [],
-        'detalhes_bdi': {}
-    }
-    
-    lines = excel_text.split('\n')
-    
-    # Buscar preços na aba "Itens Serviços"
-    in_itens_servicos = False
-    precos_encontrados = []
-    
-    for line in lines:
-        if "=== ABA: Itens Serviços ===" in line:
-            in_itens_servicos = True
-            continue
-        elif "=== ABA:" in line and in_itens_servicos:
-            in_itens_servicos = False
-            continue
-        
-        if in_itens_servicos and "Preço Total(R$)" in line:
-            # Próximas linhas devem conter os preços
-            continue
-        
-        if in_itens_servicos and line.strip():
-            # Buscar valores numéricos na linha
-            valores = re.findall(r'[\d.,]+', line)
-            for valor in valores:
-                try:
-                    # Tentar converter para float
-                    if '.' in valor and ',' in valor:
-                        # Formato brasileiro: 1.234.567,89
-                        clean_valor = valor.replace('.', '').replace(',', '.')
-                    elif ',' in valor:
-                        # Pode ser decimal brasileiro: 1234,89
-                        clean_valor = valor.replace(',', '.')
-                    else:
-                        clean_valor = valor
-                    
-                    float_valor = float(clean_valor)
-                    if float_valor > 100:  # Filtrar valores muito pequenos
-                        precos_encontrados.append((valor, float_valor))
-                        analysis['itens_servicos'].append(f"R$ {valor}")
-                except:
-                    continue
-    
-    # Determinar preço total (maior valor ou soma)
-    if precos_encontrados:
-        # Ordenar por valor
-        precos_encontrados.sort(key=lambda x: x[1], reverse=True)
-        
-        # Se há muitos valores, somar todos; senão, pegar o maior
-        if len(precos_encontrados) > 5:
-            total = sum([p[1] for p in precos_encontrados])
-            analysis['preco_total'] = f"R$ {total:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
-        else:
-            analysis['preco_total'] = f"R$ {precos_encontrados[0][0]}"
-    
-    # Buscar BDI na aba específica
-    in_bdi = False
-    for line in lines:
-        if "=== ABA: BDI ===" in line:
-            in_bdi = True
-            continue
-        elif "=== ABA:" in line and in_bdi:
-            in_bdi = False
-            continue
-        
-        if in_bdi and line.strip():
-            # Buscar percentuais de BDI
-            bdi_matches = re.findall(r'(\d+[,.]?\d*)%?', line)
-            if bdi_matches:
-                for match in bdi_matches:
-                    try:
-                        bdi_val = float(match.replace(',', '.'))
-                        if 5 <= bdi_val <= 50:  # BDI típico entre 5% e 50%
-                            analysis['bdi'] = f"{bdi_val}%"
-                            break
-                    except:
-                        continue
-    
-    # Buscar composição de custos
-    in_comp_custo = False
-    for line in lines:
-        if "=== ABA: Comp. Custo -GLOBAL ===" in line:
-            in_comp_custo = True
-            continue
-        elif "=== ABA:" in line and in_comp_custo:
-            in_comp_custo = False
-            continue
-        
-        if in_comp_custo and line.strip():
-            # Identificar categorias de custo
-            if any(keyword in line.lower() for keyword in ['mão de obra', 'material', 'equipamento']):
-                analysis['observacoes'].append(line.strip()[:100] + "...")
-    
-    # Buscar CNPJ se não fornecido
-    if not analysis['cnpj']:
-        cnpj_patterns = [
-            r'(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
-            r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})'
-        ]
-        
-        for pattern in cnpj_patterns:
-            matches = re.findall(pattern, excel_text)
-            if matches:
-                analysis['cnpj'] = matches[0]
-                break
-    
-    return analysis
-
-def analyze_commercial_proposal_pdf(proposal_text, company_name, cnpj):
-    """Analisa uma proposta comercial em PDF"""
+def analyze_commercial_proposal(proposal_text, company_name, cnpj):
+    """Analisa uma proposta comercial e extrai informações estruturadas"""
     analysis = {
         'empresa': company_name,
         'cnpj': cnpj,
@@ -1239,19 +1035,18 @@ def analyze_commercial_proposal_pdf(proposal_text, company_name, cnpj):
             analysis['preco_total'] = max(cleaned_prices, key=lambda x: x[1])[0]
     
     # Buscar CNPJ com padrão mais específico
-    if not analysis['cnpj']:
-        cnpj_patterns = [
-            r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}',
-            r'\d{14}',
-            r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
-            r'CNPJ.*?(\d{14})'
-        ]
-        
-        for pattern in cnpj_patterns:
-            matches = re.findall(pattern, proposal_text)
-            if matches:
-                analysis['cnpj'] = matches[0]
-                break
+    cnpj_patterns = [
+        r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}',
+        r'\d{14}',
+        r'CNPJ.*?(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})',
+        r'CNPJ.*?(\d{14})'
+    ]
+    
+    for pattern in cnpj_patterns:
+        matches = re.findall(pattern, proposal_text)
+        if matches:
+            analysis['cnpj'] = matches[0]
+            break
     
     # Buscar condições de pagamento
     payment_keywords = ['pagamento', 'parcela', 'à vista', 'prazo', 'condição']
@@ -1387,7 +1182,7 @@ def generate_detailed_comparative_analysis(tr_analysis, technical_analyses, comm
     return tech_comparison, comm_comparison
 
 def generate_enhanced_report(project_name, project_description, tr_analysis, technical_analyses, commercial_analyses, tech_comparison, comm_comparison):
-    """Gera relatório aprimorado com análise técnica detalhada e dados comerciais de Excel"""
+    """Gera relatório aprimorado com análise técnica detalhada"""
     
     current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
     
@@ -1468,12 +1263,8 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
     # Análise detalhada por empresa
     for analysis in technical_analyses:
         empresa = analysis['empresa']
-        cnpj = analysis.get('cnpj', 'Não identificado')
-        
         report += f"""
 ### 📋 Análise Técnica Detalhada: {empresa}
-
-**CNPJ:** {cnpj}
 
 #### 🔬 Metodologia Proposta
 **Descrição:** {analysis['metodologia']['descricao']}
@@ -1617,8 +1408,6 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
             report += f"| {emoji} {i}º | {empresa} | {preco} | {status} |\n"
         
         report += "\n"
-    else:
-        report += "**Atenção:** Não foi possível extrair informações de preços das propostas comerciais.\n\n"
     
     # Análise detalhada por empresa comercial
     for analysis in commercial_analyses:
@@ -1640,18 +1429,6 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
                 report += f"- {prazo}\n"
         else:
             report += "Prazos não especificados.\n"
-        
-        # Adicionar itens de serviços se disponível
-        if analysis.get('itens_servicos'):
-            report += "\n**Itens de Serviços Identificados:**\n"
-            for item in analysis['itens_servicos'][:5]:
-                report += f"- {item}\n"
-        
-        # Adicionar observações se disponível
-        if analysis.get('observacoes'):
-            report += "\n**Observações:**\n"
-            for obs in analysis['observacoes'][:3]:
-                report += f"- {obs}\n"
         
         report += "\n---\n"
     
@@ -1681,8 +1458,6 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 """
     
     # Identificar melhor proposta técnica
-    melhor_tecnica = "A definir"
-    score_tecnico = 0
     if tech_comparison.get('ranking_tecnico'):
         melhor_tecnica, score_tecnico = tech_comparison['ranking_tecnico'][0]
         report += f"**Melhor Proposta Técnica:** {melhor_tecnica} (Score: {score_tecnico:.1f}%)\n\n"
@@ -1695,21 +1470,17 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
                 report += f"- {ponto}\n"
     
     report += "\n### Síntese da Análise Comercial\n"
-    melhor_comercial = "A definir"
     if comm_comparison.get('ranking_precos'):
-        melhor_comercial_data = comm_comparison['ranking_precos'][0]
-        melhor_comercial = melhor_comercial_data[0]
-        report += f"**Melhor Proposta Comercial:** {melhor_comercial} - {melhor_comercial_data[1]}\n\n"
+        melhor_comercial = comm_comparison['ranking_precos'][0]
+        report += f"**Melhor Proposta Comercial:** {melhor_comercial[0]} - {melhor_comercial[1]}\n\n"
     
     # Recomendação de custo-benefício
-    melhor_cb = "A definir"
     if comm_comparison.get('analise_custo_beneficio'):
         cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
                           key=lambda x: x[1]['indice_custo_beneficio'])
-        melhor_cb_data = cb_sorted[0]
-        melhor_cb = melhor_cb_data[0]
+        melhor_cb = cb_sorted[0]
         
-        report += f"**Melhor Custo-Benefício:** {melhor_cb} (Índice: {melhor_cb_data[1]['indice_custo_beneficio']})\n\n"
+        report += f"**Melhor Custo-Benefício:** {melhor_cb[0]} (Índice: {melhor_cb[1]['indice_custo_beneficio']})\n\n"
     
     report += """### Recomendações Específicas
 
@@ -1728,7 +1499,6 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 ### Considerações Importantes
 
 - Esta análise foi realizada com base no conteúdo extraído dos documentos fornecidos.
-- Dados comerciais foram extraídos de planilhas Excel quando disponíveis.
 - Recomenda-se análise detalhada adicional por especialistas da área.
 - Verificar conformidade com a legislação de licitações aplicável.
 - Considerar aspectos qualitativos não capturados na análise automatizada.
@@ -1739,12 +1509,30 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 """
     
     # Resumo final
-    report += f"""
+    if tech_comparison.get('ranking_tecnico') and comm_comparison.get('ranking_precos'):
+        melhor_tecnica = tech_comparison['ranking_tecnico'][0][0]
+        melhor_comercial = comm_comparison['ranking_precos'][0][0]
+        
+        if comm_comparison.get('analise_custo_beneficio'):
+            cb_sorted = sorted(comm_comparison['analise_custo_beneficio'].items(), 
+                              key=lambda x: x[1]['indice_custo_beneficio'])
+            melhor_cb = cb_sorted[0][0]
+        else:
+            melhor_cb = 'A definir'
+        
+        report += f"""
 **Melhor Proposta Técnica:** {melhor_tecnica}
 **Melhor Proposta Comercial:** {melhor_comercial}
 **Melhor Custo-Benefício:** {melhor_cb}
 
 **Recomendação Geral:** {'Empresa ' + melhor_cb + ' apresenta o melhor equilíbrio entre qualidade técnica e proposta comercial.' if melhor_cb != 'A definir' else 'Realizar análise conjunta dos aspectos técnicos e comerciais, considerando o melhor custo-benefício para o projeto.'}
+"""
+    else:
+        report += """
+**Melhor Proposta Técnica:** A definir
+**Melhor Proposta Comercial:** A definir
+
+**Recomendação Geral:** Realizar análise conjunta dos aspectos técnicos e comerciais, considerando o melhor custo-benefício para o projeto.
 """
     
     report += f"""
@@ -1753,7 +1541,7 @@ def generate_enhanced_report(project_name, project_description, tr_analysis, tec
 
 *Relatório gerado automaticamente pelo Proposal Analyzer Pro com Análise de IA Avançada*  
 *Data: {current_time}*  
-*Versão: 4.0 - Enhanced Technical Analysis with Excel Support*
+*Versão: 3.0 - Enhanced Technical Analysis*
 """
     
     return report
@@ -1819,8 +1607,8 @@ def analyze_proposals():
                 file.save(file_path)
                 content = extract_text_from_file(file_path)
                 
-                # Análise comercial com IA (incluindo Excel)
-                comm_analysis = analyze_commercial_proposal_excel(content, company, cnpj)
+                # Análise comercial com IA
+                comm_analysis = analyze_commercial_proposal(content, company, cnpj)
                 commercial_analyses.append(comm_analysis)
                 
                 commercial_proposals.append({
