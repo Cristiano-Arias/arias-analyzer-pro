@@ -6,6 +6,8 @@ from flask_cors import CORS
 import PyPDF2
 import docx
 import io
+import subprocess
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
@@ -537,10 +539,10 @@ HTML_TEMPLATE = '''
                     window.URL.revokeObjectURL(url);
                     document.body.removeChild(a);
                 } else {
-                    alert('Erro ao baixar o relatório.');
+                    alert('Erro ao baixar o arquivo.');
                 }
             } catch (error) {
-                alert('Erro: ' + error.message);
+                alert('Erro na comunicação com o servidor: ' + error.message);
             }
         }
     </script>
@@ -548,122 +550,145 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-def extract_text_from_pdf(file_path):
-    """Extrai texto de arquivo PDF"""
-    try:
-        text = ""
-        with open(file_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
-            for page in pdf_reader.pages:
-                text += page.extract_text() + "\n"
-        return text
-    except Exception as e:
-        return f"Erro ao ler PDF: {str(e)}"
-
-def extract_text_from_docx(file_path):
-    """Extrai texto de arquivo DOCX"""
-    try:
-        doc = docx.Document(file_path)
-        text = ""
-        for paragraph in doc.paragraphs:
-            text += paragraph.text + "\n"
-        return text
-    except Exception as e:
-        return f"Erro ao ler DOCX: {str(e)}"
-
 def extract_text_from_file(file_path):
     """Extrai texto de diferentes tipos de arquivo"""
-    file_extension = os.path.splitext(file_path)[1].lower()
+    try:
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        if file_extension == '.pdf':
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                text = ""
+                for page in pdf_reader.pages:
+                    text += page.extract_text() + "\n"
+                return text
+        
+        elif file_extension in ['.doc', '.docx']:
+            doc = docx.Document(file_path)
+            text = ""
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+            return text
+        
+        elif file_extension == '.txt':
+            with open(file_path, 'r', encoding='utf-8') as file:
+                return file.read()
+        
+        elif file_extension == '.zip':
+            # Para arquivos ZIP, extrair e processar cada arquivo
+            extracted_text = ""
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                temp_dir = tempfile.mkdtemp()
+                zip_ref.extractall(temp_dir)
+                
+                for root, dirs, files in os.walk(temp_dir):
+                    for file in files:
+                        file_path_in_zip = os.path.join(root, file)
+                        try:
+                            extracted_text += extract_text_from_file(file_path_in_zip) + "\n\n"
+                        except:
+                            continue
+            
+            return extracted_text
+        
+        else:
+            return "Formato de arquivo não suportado para extração de texto."
     
-    if file_extension == '.pdf':
-        return extract_text_from_pdf(file_path)
-    elif file_extension in ['.docx', '.doc']:
-        return extract_text_from_docx(file_path)
-    else:
-        return "Formato de arquivo não suportado para extração de texto."
+    except Exception as e:
+        return f"Erro ao extrair texto: {str(e)}"
 
 def generate_analysis_report(project_name, project_description, tr_text, technical_proposals, commercial_proposals):
     """Gera relatório de análise das propostas"""
+    
+    current_time = datetime.now().strftime("%d/%m/%Y %H:%M")
     
     report = f"""# Relatório de Análise de Propostas - {project_name}
 
 ## Informações do Projeto
 **Nome:** {project_name}
 **Descrição:** {project_description if project_description else 'Não informada'}
-**Data de Análise:** {__import__('datetime').datetime.now().strftime('%d/%m/%Y %H:%M')}
+**Data de Análise:** {current_time}
 
 ## Resumo Executivo
 Este relatório apresenta a análise comparativa das propostas técnicas e comerciais recebidas para o projeto "{project_name}".
 
 ## Análise do Termo de Referência
 ### Principais Requisitos Identificados:
-{tr_text[:1000]}...
+{tr_text[:500]}...
 
 ## Análise das Propostas Técnicas
 """
     
-    for i, proposal in enumerate(technical_proposals, 1):
-        company = proposal.get('company', f'Empresa {i}')
-        content = proposal.get('content', 'Conteúdo não disponível')
-        
-        report += f"""
-### {i}. {company}
+    if technical_proposals:
+        report += "### Propostas Técnicas Recebidas:\n\n"
+        for i, proposal in enumerate(technical_proposals, 1):
+            company = proposal.get('company', f'Empresa {i}')
+            content = proposal.get('content', 'Conteúdo não disponível')[:300]
+            
+            report += f"""#### {i}. {company}
 **Resumo da Proposta:**
-{content[:500]}...
+{content}...
 
-**Pontos Fortes:**
-- Metodologia apresentada
-- Experiência da equipe
+**Pontos Avaliados:**
+- Metodologia de execução
 - Cronograma proposto
-
-**Pontos de Atenção:**
-- Verificar aderência aos requisitos
-- Analisar viabilidade técnica
-"""
-
-    report += "\n## Análise das Propostas Comerciais\n"
-    
-    for i, proposal in enumerate(commercial_proposals, 1):
-        company = proposal.get('company', f'Empresa {i}')
-        cnpj = proposal.get('cnpj', 'Não informado')
-        content = proposal.get('content', 'Conteúdo não disponível')
-        
-        report += f"""
-### {i}. {company}
-**CNPJ:** {cnpj}
-**Resumo da Proposta:**
-{content[:500]}...
-
-**Análise Comercial:**
-- Preço competitivo
-- Condições de pagamento
-- Prazo de entrega
-"""
-
-    report += """
-## Comparativo Geral
-
-### Ranking Técnico (Preliminar)
-1. Empresa com melhor metodologia
-2. Empresa com maior experiência
-3. Empresa com cronograma mais realista
-
-### Ranking Comercial (Preliminar)
-1. Melhor relação custo-benefício
-2. Condições de pagamento mais favoráveis
-3. Menor prazo de entrega
-
-## Recomendações
-1. Realizar análise detalhada dos documentos técnicos
-2. Verificar referências das empresas
-3. Confirmar capacidade técnica e financeira
-4. Negociar condições comerciais
-
-## Conclusão
-Este relatório fornece uma análise preliminar das propostas recebidas. Recomenda-se uma avaliação mais detalhada antes da decisão final.
+- Equipe técnica
+- Recursos e equipamentos
 
 ---
-*Relatório gerado pelo Proposal Analyzer Pro*
+
+"""
+    else:
+        report += "Nenhuma proposta técnica foi submetida.\n\n"
+    
+    report += "## Análise das Propostas Comerciais\n"
+    
+    if commercial_proposals:
+        report += "### Propostas Comerciais Recebidas:\n\n"
+        for i, proposal in enumerate(commercial_proposals, 1):
+            company = proposal.get('company', f'Empresa {i}')
+            cnpj = proposal.get('cnpj', 'Não informado')
+            content = proposal.get('content', 'Conteúdo não disponível')[:300]
+            
+            report += f"""#### {i}. {company}
+**CNPJ:** {cnpj}
+**Resumo da Proposta:**
+{content}...
+
+**Pontos Avaliados:**
+- Preço total
+- Composição de custos
+- Condições de pagamento
+- Prazos de execução
+
+---
+
+"""
+    else:
+        report += "Nenhuma proposta comercial foi submetida.\n\n"
+    
+    report += """## Comparativo e Recomendações
+
+### Critérios de Avaliação
+1. **Técnico:** Aderência ao TR, metodologia, cronograma, equipe
+2. **Comercial:** Preço, condições de pagamento, viabilidade
+3. **Qualificação:** Experiência da empresa, certificações
+
+### Análise Comparativa
+[Esta seção seria preenchida com análise detalhada baseada nos documentos submetidos]
+
+### Recomendações
+Com base na análise realizada, recomenda-se:
+1. Verificação detalhada das propostas técnicas
+2. Análise da saúde financeira das empresas proponentes
+3. Esclarecimentos adicionais se necessário
+
+## Conclusão
+Este relatório fornece uma visão geral das propostas recebidas. Recomenda-se análise detalhada adicional antes da tomada de decisão final.
+
+---
+*Relatório gerado automaticamente pelo Proposal Analyzer Pro*
+*Data: {current_time}*
 """
     
     return report
@@ -676,19 +701,21 @@ def index():
 def analyze_proposals():
     try:
         # Obter dados do formulário
-        project_name = request.form.get('projectName', '')
+        project_name = request.form.get('projectName')
         project_description = request.form.get('projectDescription', '')
         
         if not project_name:
-            return jsonify({'success': False, 'error': 'Nome do projeto é obrigatório'})
+            return jsonify({'success': False, 'error': 'Nome do projeto é obrigatório.'})
         
         # Processar TR
         tr_file = request.files.get('trFile')
-        tr_text = ""
-        if tr_file and tr_file.filename:
-            tr_path = os.path.join(app.config['UPLOAD_FOLDER'], tr_file.filename)
-            tr_file.save(tr_path)
-            tr_text = extract_text_from_file(tr_path)
+        if not tr_file:
+            return jsonify({'success': False, 'error': 'Arquivo do TR é obrigatório.'})
+        
+        tr_filename = f"tr_{tr_file.filename}"
+        tr_path = os.path.join(app.config['UPLOAD_FOLDER'], tr_filename)
+        tr_file.save(tr_path)
+        tr_text = extract_text_from_file(tr_path)
         
         # Processar propostas técnicas
         technical_proposals = []
@@ -724,12 +751,12 @@ def analyze_proposals():
         
         # Gerar relatório
         report = generate_analysis_report(
-            project_name, project_description, tr_text, 
+            project_name, project_description, tr_text,
             technical_proposals, commercial_proposals
         )
         
         # Salvar relatório
-        report_id = f"report_{__import__('time').time()}"
+        report_id = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         report_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
         
         with open(report_path, 'w', encoding='utf-8') as f:
@@ -746,12 +773,70 @@ def download_report(report_id, format):
         if format == 'markdown':
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
             return send_file(file_path, as_attachment=True, download_name='relatorio_analise.md')
-        
         elif format == 'pdf':
-            # Para PDF, retornamos o markdown mesmo (conversão PDF seria mais complexa)
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
-            return send_file(file_path, as_attachment=True, download_name='relatorio_analise.txt')
-        
+            # Gerar PDF usando uma biblioteca Python pura
+            md_file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
+            pdf_file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"relatorio_analise.pdf")
+            
+            # Ler o conteúdo markdown
+            with open(md_file_path, 'r', encoding='utf-8') as f:
+                markdown_content = f.read()
+            
+            # Converter para PDF usando reportlab
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            
+            # Criar documento PDF
+            doc = SimpleDocTemplate(pdf_file_path, pagesize=A4)
+            styles = getSampleStyleSheet()
+            story = []
+            
+            # Estilo personalizado
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=16,
+                spaceAfter=30,
+            )
+            
+            heading_style = ParagraphStyle(
+                'CustomHeading',
+                parent=styles['Heading2'],
+                fontSize=14,
+                spaceAfter=12,
+            )
+            
+            normal_style = ParagraphStyle(
+                'CustomNormal',
+                parent=styles['Normal'],
+                fontSize=10,
+                spaceAfter=12,
+            )
+            
+            # Processar markdown simples para PDF
+            lines = markdown_content.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    story.append(Spacer(1, 12))
+                elif line.startswith('# '):
+                    story.append(Paragraph(line[2:], title_style))
+                elif line.startswith('## '):
+                    story.append(Paragraph(line[3:], heading_style))
+                elif line.startswith('### '):
+                    story.append(Paragraph(line[4:], heading_style))
+                elif line.startswith('**') and line.endswith('**'):
+                    story.append(Paragraph(f"<b>{line[2:-2]}</b>", normal_style))
+                else:
+                    if line:
+                        story.append(Paragraph(line, normal_style))
+            
+            # Construir PDF
+            doc.build(story)
+            
+            return send_file(pdf_file_path, as_attachment=True, download_name='relatorio_analise.pdf')
         else:
             return jsonify({'error': 'Formato não suportado'}), 400
             
@@ -760,3 +845,4 @@ def download_report(report_id, format):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
+
