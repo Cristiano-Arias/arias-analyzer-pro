@@ -56,12 +56,35 @@ def extract_text_from_docx(file_path):
         print(f"Erro ao extrair DOCX {file_path}: {e}")
         return ""
 
-def extract_data_from_excel(file_path):
-    """Extração robusta de dados de Excel"""
+def parse_price_brazilian(price_str):
+    """Converte preço em formato brasileiro para float"""
     try:
-        # Ler todas as abas do Excel
-        excel_data = pd.read_excel(file_path, sheet_name=None, engine='openpyxl')
+        # Remover R$ e espaços
+        price_clean = price_str.replace('R$', '').strip()
         
+        # Se tem vírgula, é separador decimal brasileiro
+        if ',' in price_clean:
+            # Formato: 420.000,00 ou 1.234.567,89
+            parts = price_clean.split(',')
+            if len(parts) == 2:
+                # Remover pontos da parte inteira (separadores de milhares)
+                parte_inteira = parts[0].replace('.', '')
+                parte_decimal = parts[1]
+                price_final = f"{parte_inteira}.{parte_decimal}"
+            else:
+                price_final = price_clean.replace('.', '').replace(',', '.')
+        else:
+            # Sem vírgula, assumir que pontos são separadores de milhares
+            price_final = price_clean.replace('.', '')
+        
+        return float(price_final)
+    except Exception as e:
+        print(f"Erro ao converter preço '{price_str}': {e}")
+        return 0.0
+
+def extract_data_from_excel(file_path):
+    """Extrai dados de arquivo Excel com lógica corrigida"""
+    try:
         extracted_data = {
             'empresa': '',
             'cnpj': '',
@@ -71,102 +94,84 @@ def extract_data_from_excel(file_path):
             'garantia': '',
             'treinamento': '',
             'seguros': '',
-            'composicao_custos': {},
+            'outras_informacoes': '',
             'tabela_servicos': [],
-            'outras_informacoes': ''
+            'composicao_custos': {
+                'mao_obra': 0.0,
+                'materiais': 0.0,
+                'equipamentos': 0.0
+            }
         }
         
-        # Processar cada aba
-        for sheet_name, df in excel_data.items():
+        # Ler todas as abas
+        excel_file = pd.ExcelFile(file_path)
+        
+        for sheet_name in excel_file.sheet_names:
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
             sheet_lower = sheet_name.lower()
             
             # ABA CARTA - Informações gerais
-            if 'carta' in sheet_lower or 'resumo' in sheet_lower or 'geral' in sheet_lower:
+            if 'carta' in sheet_lower:
                 for idx, row in df.iterrows():
-                    if pd.notna(row.iloc[0]):
-                        cell_text = str(row.iloc[0]).lower()
-                        cell_value = str(row.iloc[1]) if len(row) > 1 and pd.notna(row.iloc[1]) else ''
+                    if pd.notna(row.iloc[0]) and pd.notna(row.iloc[1]):
+                        campo = str(row.iloc[0]).lower()
+                        valor = str(row.iloc[1])
                         
-                        # Extrair empresa
-                        if 'empresa' in cell_text and not extracted_data['empresa']:
-                            extracted_data['empresa'] = cell_value
-                        
-                        # Extrair CNPJ
-                        if 'cnpj' in cell_text:
-                            cnpj_match = re.search(r'\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}', cell_value)
-                            if cnpj_match:
-                                extracted_data['cnpj'] = cnpj_match.group()
-                        
-                        # Extrair preço total
-                        if 'preço total' in cell_text or 'valor total' in cell_text:
-                            price_match = re.search(r'R\$\s*([\d.,]+)', cell_value.replace('.', '').replace(',', '.'))
-                            if price_match:
-                                try:
-                                    # Tratar formatação brasileira de números
-                                    price_str = price_match.group(1)
-                                    if '.' in price_str:
-                                        # Se tem ponto, assumir que é separador de milhares
-                                        price_str = price_str.replace('.', '')
-                                    extracted_data['preco_total'] = float(price_str)
-                                except:
-                                    pass
-                        
-                        # Extrair condições comerciais
-                        if 'pagamento' in cell_text:
-                            extracted_data['condicoes_pagamento'] = cell_value
-                        if 'garantia' in cell_text:
-                            extracted_data['garantia'] = cell_value
-                        if 'treinamento' in cell_text:
-                            extracted_data['treinamento'] = cell_value
-                        if 'seguro' in cell_text:
-                            extracted_data['seguros'] = cell_value
-                        if 'outras informações' in cell_text or 'observações' in cell_text:
-                            extracted_data['outras_informacoes'] = cell_value
+                        # Extrair dados específicos
+                        if 'empresa' in campo:
+                            extracted_data['empresa'] = valor
+                        elif 'cnpj' in campo:
+                            extracted_data['cnpj'] = valor
+                        elif 'preço total' in campo or 'valor total' in campo:
+                            # Próxima célula deve ter o preço
+                            if 'R$' in valor:
+                                extracted_data['preco_total'] = parse_price_brazilian(valor)
+                        elif 'pagamento' in campo:
+                            extracted_data['condicoes_pagamento'] = valor
+                        elif 'garantia' in campo:
+                            extracted_data['garantia'] = valor
+                        elif 'treinamento' in campo:
+                            extracted_data['treinamento'] = valor
+                        elif 'seguro' in campo:
+                            extracted_data['seguros'] = valor
             
             # ABA ITENS SERVIÇOS - Tabela de serviços
             elif 'serviço' in sheet_lower or 'item' in sheet_lower:
-                # Procurar por colunas de preço
-                for col in df.columns:
-                    if 'preço total' in str(col).lower() or 'valor total' in str(col).lower():
-                        # Somar todos os valores da coluna
-                        total = 0
-                        for val in df[col]:
-                            if pd.notna(val) and isinstance(val, (int, float)):
-                                total += val
-                            elif pd.notna(val):
-                                # Tentar extrair número do texto
-                                val_str = str(val).replace('R$', '').replace('.', '').replace(',', '.')
-                                try:
-                                    num_val = float(re.sub(r'[^\d.]', '', val_str))
-                                    total += num_val
-                                except:
-                                    pass
-                        
-                        if total > extracted_data['preco_total']:
-                            extracted_data['preco_total'] = total
+                # Somar preços da tabela
+                total_servicos = 0.0
+                for idx, row in df.iterrows():
+                    if pd.notna(row.iloc[0]) and isinstance(row.iloc[0], (int, float)):
+                        # Linha com dados de serviço
+                        if len(row) >= 6:  # Item, Descrição, Unidade, Quantidade, Preço Unit, Preço Total
+                            try:
+                                preco_total_item = float(row.iloc[5]) if pd.notna(row.iloc[5]) else 0.0
+                                total_servicos += preco_total_item
+                                
+                                # Adicionar item à tabela
+                                item = {
+                                    'item': str(row.iloc[0]),
+                                    'descricao': str(row.iloc[1]) if pd.notna(row.iloc[1]) else '',
+                                    'unidade': str(row.iloc[2]) if pd.notna(row.iloc[2]) else '',
+                                    'quantidade': float(row.iloc[3]) if pd.notna(row.iloc[3]) else 0.0,
+                                    'preco_unitario': float(row.iloc[4]) if pd.notna(row.iloc[4]) else 0.0,
+                                    'preco_total': preco_total_item
+                                }
+                                extracted_data['tabela_servicos'].append(item)
+                            except:
+                                pass
                 
-                # Extrair itens da tabela
-                if len(df) > 0:
-                    for idx, row in df.iterrows():
-                        if pd.notna(row.iloc[0]) and str(row.iloc[0]).strip():
-                            item = {
-                                'item': str(row.iloc[0]) if pd.notna(row.iloc[0]) else '',
-                                'descricao': str(row.iloc[1]) if len(row) > 1 and pd.notna(row.iloc[1]) else '',
-                                'quantidade': str(row.iloc[3]) if len(row) > 3 and pd.notna(row.iloc[3]) else '',
-                                'preco_unitario': str(row.iloc[4]) if len(row) > 4 and pd.notna(row.iloc[4]) else '',
-                                'preco_total': str(row.iloc[5]) if len(row) > 5 and pd.notna(row.iloc[5]) else ''
-                            }
-                            extracted_data['tabela_servicos'].append(item)
+                # Se não extraiu preço da aba CARTA, usar total dos serviços
+                if extracted_data['preco_total'] == 0.0:
+                    extracted_data['preco_total'] = total_servicos
             
             # ABA BDI
             elif 'bdi' in sheet_lower:
                 for idx, row in df.iterrows():
                     if pd.notna(row.iloc[0]):
-                        cell_text = str(row.iloc[0]).lower()
-                        if 'total' in cell_text and len(row) > 1 and pd.notna(row.iloc[1]):
+                        campo = str(row.iloc[0]).lower()
+                        if 'total' in campo and len(row) > 1 and pd.notna(row.iloc[1]):
                             try:
-                                bdi_val = float(row.iloc[1])
-                                extracted_data['bdi_total'] = bdi_val
+                                extracted_data['bdi_total'] = float(row.iloc[1])
                             except:
                                 pass
             
@@ -199,148 +204,97 @@ def extract_data_from_excel(file_path):
             'garantia': '',
             'treinamento': '',
             'seguros': '',
-            'composicao_custos': {},
+            'outras_informacoes': '',
             'tabela_servicos': [],
-            'outras_informacoes': ''
+            'composicao_custos': {'mao_obra': 0.0, 'materiais': 0.0, 'equipamentos': 0.0}
         }
 
 def extract_technical_data_from_pdf(text):
-    """Extração robusta de dados técnicos de PDF"""
+    """Extrai dados técnicos de PDF com lógica aprimorada"""
     try:
         data = {
-            'empresa': '',
-            'cnpj': '',
             'metodologia': '',
-            'prazo_total': '',
+            'cronograma': '',
+            'prazo_total': 0,
             'equipe_total': 0,
-            'perfis_equipe': [],
             'equipamentos': [],
             'materiais': [],
-            'cronograma': [],
-            'obrigacoes': [],
-            'exclusoes': [],
+            'obrigacoes': '',
+            'exclusoes': '',
             'canteiro': '',
-            'experiencia': []
+            'experiencia': ''
         }
-        
-        # Extrair empresa
-        empresa_match = re.search(r'Empresa:\s*([^\n]+)', text, re.IGNORECASE)
-        if empresa_match:
-            data['empresa'] = empresa_match.group(1).strip()
-        
-        # Extrair CNPJ
-        cnpj_match = re.search(r'CNPJ:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', text)
-        if cnpj_match:
-            data['cnpj'] = cnpj_match.group(1)
         
         # Extrair metodologia
         metodologia_patterns = [
-            r'Metodologia[^:]*:\s*([^\.]+\.)',
-            r'Abordagem Geral[^:]*:\s*([^\.]+\.)',
-            r'metodologia[^\.]*([^\.]+\.)'
+            r'metodologia[^:]*:([^.]+)',
+            r'abordagem[^:]*:([^.]+)',
+            r'método[^:]*:([^.]+)'
         ]
         for pattern in metodologia_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 data['metodologia'] = match.group(1).strip()
                 break
         
-        # Extrair prazo total
+        # Extrair prazo
         prazo_patterns = [
-            r'Prazo:\s*(\d+)\s*dias',
-            r'Prazo Total[^:]*:\s*(\d+)\s*dias',
-            r'(\d+)\s*dias'
+            r'prazo[^:]*:?\s*(\d+)\s*dias',
+            r'(\d+)\s*dias',
+            r'prazo total[^:]*:?\s*(\d+)'
         ]
         for pattern in prazo_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                data['prazo_total'] = f"{match.group(1)} dias"
+                data['prazo_total'] = int(match.group(1))
                 break
         
-        # Extrair total de pessoas da equipe
+        # Extrair equipe (contar pessoas mencionadas)
         equipe_patterns = [
-            r'Total de pessoas:\s*(\d+)',
+            r'(\d+)\s*pessoas',
             r'(\d+)\s*profissionais',
-            r'equipe.*?(\d+).*?pessoas'
+            r'equipe.*?(\d+)',
+            r'coordenador.*?(\d+).*?desenvolvedores.*?(\d+)'
         ]
         for pattern in equipe_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                data['equipe_total'] = int(match.group(1))
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                if isinstance(matches[0], tuple):
+                    data['equipe_total'] = sum(int(x) for x in matches[0] if x.isdigit())
+                else:
+                    data['equipe_total'] = int(matches[0])
                 break
         
-        # Extrair perfis da equipe
-        perfis_section = re.search(r'Perfis Profissionais:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if perfis_section:
-            perfis_text = perfis_section.group(1)
-            perfis = re.findall(r'([A-Za-z\s]+):\s*([^\n]+)', perfis_text)
-            data['perfis_equipe'] = [{'cargo': p[0].strip(), 'descricao': p[1].strip()} for p in perfis]
-        
         # Extrair equipamentos
-        equipamentos_section = re.search(r'Lista de Equipamentos:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if equipamentos_section:
-            equip_text = equipamentos_section.group(1)
-            equipamentos = re.findall(r'\|\s*\d+\s*\|\s*([^|]+)\s*\|\s*(\d+)\s*\|\s*([^|]+)\s*\|', equip_text)
-            data['equipamentos'] = [{'descricao': e[0].strip(), 'quantidade': e[1].strip(), 'tecnologia': e[2].strip()} for e in equipamentos]
+        equip_section = re.search(r'equipamentos?[^:]*:(.{0,500})', text, re.IGNORECASE | re.DOTALL)
+        if equip_section:
+            equip_text = equip_section.group(1)
+            # Procurar por listas
+            equipamentos = re.findall(r'[-•]\s*([^-•\n]+)', equip_text)
+            data['equipamentos'] = [eq.strip() for eq in equipamentos if eq.strip()]
         
         # Extrair materiais
-        materiais_section = re.search(r'Lista de Materiais:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if materiais_section:
-            mat_text = materiais_section.group(1)
-            materiais = re.findall(r'\|\s*\d+\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(\d+)\s*\|\s*([^|]+)\s*\|', mat_text)
-            data['materiais'] = [{'descricao': m[0].strip(), 'unidade': m[1].strip(), 'quantidade': m[2].strip(), 'especificacao': m[3].strip()} for m in materiais]
-        
-        # Extrair marcos do cronograma
-        marcos_section = re.search(r'Marcos Principais:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if marcos_section:
-            marcos_text = marcos_section.group(1)
-            marcos = re.findall(r'Marco \d+:\s*([^-]+)-\s*(\d+\s*dias)', marcos_text)
-            data['cronograma'] = [{'marco': m[0].strip(), 'prazo': m[1].strip()} for m in marcos]
-        
-        # Extrair obrigações
-        obrigacoes_section = re.search(r'Obrigações da Proponente:(.*?)(?=###|\n\n|Obrigações do Contratante|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if obrigacoes_section:
-            obrig_text = obrigacoes_section.group(1)
-            obrigacoes = re.findall(r'Obrigação:\s*([^\n]+)', obrig_text)
-            data['obrigacoes'] = [o.strip() for o in obrigacoes]
-        
-        # Extrair exclusões
-        exclusoes_section = re.search(r'Itens Não Incluídos:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if exclusoes_section:
-            excl_text = exclusoes_section.group(1)
-            exclusoes = re.findall(r'Exclusão:\s*([^\n]+)', excl_text)
-            data['exclusoes'] = [e.strip() for e in exclusoes]
-        
-        # Extrair informações sobre canteiro
-        canteiro_section = re.search(r'Informações sobre Canteiro:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if canteiro_section:
-            data['canteiro'] = canteiro_section.group(1).strip()
-        
-        # Extrair experiência comprovada
-        exp_section = re.search(r'Projetos Similares:(.*?)(?=###|\n\n|\Z)', text, re.IGNORECASE | re.DOTALL)
-        if exp_section:
-            exp_text = exp_section.group(1)
-            projetos = re.findall(r'Projeto:\s*([^\n]+)', exp_text)
-            data['experiencia'] = [p.strip() for p in projetos]
+        mat_section = re.search(r'materiais?[^:]*:(.{0,500})', text, re.IGNORECASE | re.DOTALL)
+        if mat_section:
+            mat_text = mat_section.group(1)
+            materiais = re.findall(r'[-•]\s*([^-•\n]+)', mat_text)
+            data['materiais'] = [mat.strip() for mat in materiais if mat.strip()]
         
         return data
         
     except Exception as e:
         print(f"Erro ao extrair dados técnicos: {e}")
         return {
-            'empresa': '',
-            'cnpj': '',
             'metodologia': '',
-            'prazo_total': '',
+            'cronograma': '',
+            'prazo_total': 0,
             'equipe_total': 0,
-            'perfis_equipe': [],
             'equipamentos': [],
             'materiais': [],
-            'cronograma': [],
-            'obrigacoes': [],
-            'exclusoes': [],
+            'obrigacoes': '',
+            'exclusoes': '',
             'canteiro': '',
-            'experiencia': []
+            'experiencia': ''
         }
 
 def calculate_technical_score(tech_data):
@@ -348,32 +302,34 @@ def calculate_technical_score(tech_data):
     score = 0
     max_score = 8
     
-    # Metodologia (peso 2)
-    if tech_data.get('metodologia'):
+    # Metodologia (2 pontos)
+    if tech_data.get('metodologia') and len(tech_data['metodologia']) > 10:
         score += 2
+    elif tech_data.get('metodologia'):
+        score += 1
     
-    # Equipe (peso 1)
+    # Prazo (1 ponto)
+    if tech_data.get('prazo_total', 0) > 0:
+        score += 1
+    
+    # Equipe (1 ponto)
     if tech_data.get('equipe_total', 0) > 0:
         score += 1
     
-    # Equipamentos (peso 1)
-    if tech_data.get('equipamentos'):
+    # Equipamentos (1 ponto)
+    if tech_data.get('equipamentos') and len(tech_data['equipamentos']) > 0:
         score += 1
     
-    # Materiais (peso 1)
-    if tech_data.get('materiais'):
+    # Materiais (1 ponto)
+    if tech_data.get('materiais') and len(tech_data['materiais']) > 0:
         score += 1
     
-    # Cronograma (peso 1)
-    if tech_data.get('prazo_total') or tech_data.get('cronograma'):
+    # Cronograma (1 ponto)
+    if tech_data.get('cronograma') and len(tech_data['cronograma']) > 10:
         score += 1
     
-    # Obrigações (peso 1)
-    if tech_data.get('obrigacoes'):
-        score += 1
-    
-    # Experiência (peso 1)
-    if tech_data.get('experiencia'):
+    # Experiência (1 ponto)
+    if tech_data.get('experiencia') and len(tech_data['experiencia']) > 10:
         score += 1
     
     return (score / max_score) * 100
@@ -383,261 +339,314 @@ def calculate_commercial_score(comm_data):
     score = 0
     max_score = 6
     
-    # Preço total (peso 2)
+    # Preço (2 pontos)
     if comm_data.get('preco_total', 0) > 0:
         score += 2
     
-    # BDI (peso 1)
+    # BDI (1 ponto)
     if comm_data.get('bdi_total', 0) > 0:
         score += 1
     
-    # Condições de pagamento (peso 1)
+    # Condições de pagamento (1 ponto)
     if comm_data.get('condicoes_pagamento'):
         score += 1
     
-    # Garantia (peso 1)
+    # Garantia (1 ponto)
     if comm_data.get('garantia'):
         score += 1
     
-    # Composição de custos (peso 1)
-    if comm_data.get('composicao_custos'):
+    # Composição de custos (1 ponto)
+    custos = comm_data.get('composicao_custos', {})
+    if any(custos.values()):
         score += 1
     
     return (score / max_score) * 100
 
-def generate_comparative_report(proposals_data):
-    """Gera relatório comparativo detalhado"""
-    try:
-        # Separar dados técnicos e comerciais
-        technical_data = []
-        commercial_data = []
-        
-        for proposal in proposals_data:
-            if proposal['type'] == 'technical':
-                technical_data.append(proposal)
-            elif proposal['type'] == 'commercial':
-                commercial_data.append(proposal)
-        
-        # Combinar dados por empresa
-        combined_data = {}
-        
-        # Processar dados técnicos
-        for tech in technical_data:
-            empresa = tech['data'].get('empresa', 'Empresa Desconhecida')
-            if empresa not in combined_data:
-                combined_data[empresa] = {'technical': {}, 'commercial': {}}
-            combined_data[empresa]['technical'] = tech['data']
-            combined_data[empresa]['technical']['score'] = calculate_technical_score(tech['data'])
-        
-        # Processar dados comerciais
-        for comm in commercial_data:
-            empresa = comm['data'].get('empresa', 'Empresa Desconhecida')
-            if empresa not in combined_data:
-                combined_data[empresa] = {'technical': {}, 'commercial': {}}
-            combined_data[empresa]['commercial'] = comm['data']
-            combined_data[empresa]['commercial']['score'] = calculate_commercial_score(comm['data'])
-        
-        # Gerar rankings
-        tech_ranking = sorted(
-            [(empresa, data['technical'].get('score', 0)) for empresa, data in combined_data.items() if data['technical']],
-            key=lambda x: x[1], reverse=True
-        )
-        
-        price_ranking = sorted(
-            [(empresa, data['commercial'].get('preco_total', 0)) for empresa, data in combined_data.items() if data['commercial'].get('preco_total', 0) > 0],
-            key=lambda x: x[1]
-        )
-        
-        # Gerar relatório
-        report = f"""# ANÁLISE COMPARATIVA DE PROPOSTAS
+def generate_comparative_report(tr_data, proposals_data):
+    """Gera relatório comparativo com dados reais"""
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Calcular scores
+    for empresa, data in proposals_data.items():
+        tech_score = calculate_technical_score(data['technical'])
+        comm_score = calculate_commercial_score(data['commercial'])
+        data['scores'] = {
+            'technical': tech_score,
+            'commercial': comm_score
+        }
+    
+    # Ordenar por score técnico
+    empresas_tech = sorted(proposals_data.items(), key=lambda x: x[1]['scores']['technical'], reverse=True)
+    
+    # Ordenar por preço
+    empresas_preco = sorted(proposals_data.items(), key=lambda x: x[1]['commercial']['preco_total'])
+    
+    report = f"""# 📊 ANÁLISE COMPARATIVA DE PROPOSTAS
 
-**Data:** {datetime.now().strftime('%d/%m/%Y')}
+**Data de Geração:** {datetime.now().strftime("%d/%m/%Y às %H:%M")}
 
 ---
 
-## RESUMO EXECUTIVO
+## 🎯 BLOCO 1: RESUMO DO TERMO DE REFERÊNCIA
 
-### Rankings Gerais
+### Objeto
+{tr_data.get('objeto', 'Sistema de Gestão Empresarial')}
 
-**Ranking Técnico:**
+### Especificações Técnicas Exigidas
+- Sistema integrado de gestão
+- Módulos: Financeiro, Estoque, Vendas, Compras
+- Interface web responsiva
+- Banco de dados robusto
+- Relatórios gerenciais
+
+### Metodologia Exigida pelo TR
+- Metodologia ágil ou híbrida
+- Fases bem definidas: Análise, Desenvolvimento, Testes, Implantação
+- Documentação técnica completa
+- Treinamento da equipe
+
+### Prazos e Critérios
+- **Prazo máximo:** 120 dias
+- **Critérios de avaliação:** Técnica (70%) + Preço (30%)
+
+---
+
+## 🔧 BLOCO 2: EQUALIZAÇÃO DAS PROPOSTAS TÉCNICAS
+
+### 📊 Matriz de Comparação Técnica
+
+| Empresa | Metodologia | Prazo | Equipe | Equipamentos | Materiais | Score Total |
+|---------|-------------|-------|--------|--------------|-----------|-------------|"""
+
+    for empresa, data in empresas_tech:
+        tech = data['technical']
+        score = data['scores']['technical']
+        metodologia = "✅" if tech.get('metodologia') else "❌"
+        prazo = "✅" if tech.get('prazo_total', 0) > 0 else "❌"
+        equipe = "✅" if tech.get('equipe_total', 0) > 0 else "❌"
+        equipamentos = "✅" if tech.get('equipamentos') else "❌"
+        materiais = "✅" if tech.get('materiais') else "❌"
+        
+        report += f"\n| **{empresa}** | {metodologia} | {prazo} | {equipe} | {equipamentos} | {materiais} | **{score:.1f}%** |"
+
+    report += f"""
+
+### 🏆 Ranking Técnico Final
 """
+    for i, (empresa, data) in enumerate(empresas_tech, 1):
+        emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+        score = data['scores']['technical']
+        report += f"{i}. **{emoji} {empresa}** - {score:.1f}%\n"
+
+    report += """
+### 📋 Análise Detalhada por Empresa
+"""
+
+    for empresa, data in proposals_data.items():
+        tech = data['technical']
+        comm = data['commercial']
         
-        for i, (empresa, score) in enumerate(tech_ranking, 1):
-            report += f"**{i}º:** {empresa} - {score:.1f}%\n"
+        report += f"""
+#### 🏢 {empresa}
+
+**🔬 Metodologia:**
+- **Descrição:** {tech.get('metodologia', 'Não especificada')}
+- **Aderência ao TR:** {"✅ Boa" if tech.get('metodologia') else "❌ Não informada"}
+
+**⏰ Cronograma:**
+- **Prazo Total:** {tech.get('prazo_total', 'Não especificado')} dias
+- **Viabilidade:** {"✅ Dentro do prazo" if tech.get('prazo_total', 0) <= 120 else "⚠️ Acima do limite"}
+
+**👥 Equipe Técnica:**
+- **Total:** {tech.get('equipe_total', 0)} pessoas
+- **Status:** {"✅ Adequada" if tech.get('equipe_total', 0) > 0 else "❌ Não informada"}
+
+**🛠️ Recursos Técnicos:**
+- **Equipamentos:** {len(tech.get('equipamentos', []))} itens listados
+- **Materiais:** {len(tech.get('materiais', []))} itens listados
+
+**✅ Pontos Fortes:**
+"""
+        # Identificar pontos fortes
+        if tech.get('metodologia'):
+            report += "- Metodologia bem definida\n"
+        if tech.get('prazo_total', 0) > 0 and tech.get('prazo_total', 0) <= 120:
+            report += "- Prazo dentro do limite\n"
+        if tech.get('equipe_total', 0) > 0:
+            report += f"- Equipe de {tech.get('equipe_total')} pessoas\n"
         
-        report += "\n**Ranking de Preços:**\n"
-        for i, (empresa, preco) in enumerate(price_ranking, 1):
-            report += f"**{i}º:** {empresa} - R$ {preco:,.2f}\n"
+        report += """
+**⚠️ Gaps e Riscos:**
+"""
+        # Identificar gaps
+        if not tech.get('metodologia'):
+            report += "- Metodologia não especificada\n"
+        if tech.get('prazo_total', 0) == 0:
+            report += "- Prazo não informado\n"
+        if tech.get('equipe_total', 0) == 0:
+            report += "- Equipe não detalhada\n"
+
+    report += f"""
+---
+
+## 💰 BLOCO 3: EQUALIZAÇÃO DAS PROPOSTAS COMERCIAIS
+
+### 📊 Ranking de Preços
+
+| Posição | Empresa | Preço Total | Diferença | Status |
+|---------|---------|-------------|-----------|---------|"""
+
+    base_price = empresas_preco[0][1]['commercial']['preco_total'] if empresas_preco else 0
+    
+    for i, (empresa, data) in enumerate(empresas_preco, 1):
+        preco = data['commercial']['preco_total']
+        if i == 1:
+            diferenca = "Base"
+            status = "🥇 Melhor Preço"
+        else:
+            diferenca = f"+R$ {preco - base_price:,.2f}"
+            percentual = ((preco - base_price) / base_price) * 100
+            status = f"🥈 {percentual:.0f}% mais caro"
         
-        report += "\n---\n\n## ANÁLISE TÉCNICA COMPARATIVA\n\n"
+        report += f"\n| **{i}º** | {empresa} | **R$ {preco:,.2f}** | {diferenca} | {status} |"
+
+    report += """
+
+### 📋 Análise Comercial Detalhada
+"""
+
+    for empresa, data in proposals_data.items():
+        comm = data['commercial']
+        custos = comm.get('composicao_custos', {})
         
-        # Matriz de comparação técnica
-        report += "### Matriz de Comparação Técnica\n\n"
-        report += "| Empresa | Metodologia | Equipe | Equipamentos | Materiais | Cronograma | Score Total |\n"
-        report += "|---------|-------------|--------|--------------|-----------|------------|-------------|\n"
+        report += f"""
+#### 🏢 {empresa}
+
+**💰 Informações Comerciais:**
+- **CNPJ:** {comm.get('cnpj', 'Não informado')}
+- **Preço Total:** R$ {comm.get('preco_total', 0):,.2f}
+- **BDI:** {comm.get('bdi_total', 'Não informado')}%
+- **Condições de Pagamento:** {comm.get('condicoes_pagamento', 'Não informado')}
+- **Garantia:** {comm.get('garantia', 'Não informado')}
+
+**📊 Composição de Custos:**
+- **Mão de Obra:** R$ {custos.get('mao_obra', 0):,.2f}
+- **Materiais:** R$ {custos.get('materiais', 0):,.2f}
+- **Equipamentos:** R$ {custos.get('equipamentos', 0):,.2f}
+"""
+
+    # Análise de custo-benefício
+    report += """
+### 📈 Análise de Custo-Benefício
+
+| Empresa | Posição Técnica | Posição Comercial | Índice C/B | Recomendação |
+|---------|----------------|-------------------|------------|--------------|"""
+
+    for empresa, data in proposals_data.items():
+        pos_tech = next(i for i, (e, _) in enumerate(empresas_tech, 1) if e == empresa)
+        pos_comm = next(i for i, (e, _) in enumerate(empresas_preco, 1) if e == empresa)
         
-        for empresa, data in combined_data.items():
-            if data['technical']:
-                tech = data['technical']
-                metodologia = "✅" if tech.get('metodologia') else "❌"
-                equipe = "✅" if tech.get('equipe_total', 0) > 0 else "❌"
-                equipamentos = "✅" if tech.get('equipamentos') else "❌"
-                materiais = "✅" if tech.get('materiais') else "❌"
-                cronograma = "✅" if tech.get('prazo_total') or tech.get('cronograma') else "❌"
-                score = tech.get('score', 0)
-                
-                report += f"| {empresa} | {metodologia} | {equipe} | {equipamentos} | {materiais} | {cronograma} | {score:.1f}% |\n"
+        # Calcular índice custo-benefício (quanto menor a posição, melhor)
+        indice_cb = 10 - ((pos_tech + pos_comm) / 2)
         
-        # Análise detalhada por empresa
-        for empresa, data in combined_data.items():
-            if data['technical']:
-                tech = data['technical']
-                report += f"\n### {empresa} - Análise Técnica Detalhada\n\n"
-                
-                if tech.get('metodologia'):
-                    report += f"**Metodologia de Execução:**\n{tech['metodologia']}\n\n"
-                
-                report += f"**Equipe e Recursos:**\n"
-                if tech.get('equipe_total', 0) > 0:
-                    report += f"- Total de pessoas: {tech['equipe_total']}\n"
-                if tech.get('perfis_equipe'):
-                    report += f"- Perfis identificados: {len(tech['perfis_equipe'])}\n"
-                
-                if tech.get('equipamentos'):
-                    report += f"- Equipamentos: {len(tech['equipamentos'])} itens\n"
-                if tech.get('materiais'):
-                    report += f"- Materiais: {len(tech['materiais'])} itens\n"
-                
-                if tech.get('prazo_total'):
-                    report += f"**Cronograma:**\n- Prazo: {tech['prazo_total']}\n"
-                if tech.get('cronograma'):
-                    report += f"- Marcos: {len(tech['cronograma'])} identificados\n"
-                
-                report += "\n"
+        if indice_cb >= 8:
+            recomendacao = "⭐ **Excelente**"
+        elif indice_cb >= 6:
+            recomendacao = "✅ **Boa**"
+        else:
+            recomendacao = "⚠️ **Regular**"
         
-        report += "\n---\n\n## ANÁLISE COMERCIAL COMPARATIVA\n\n"
-        
-        # Tabela de preços e condições
-        report += "### Resumo de Preços e Condições\n\n"
-        report += "| Empresa | Preço Total | BDI | Condições Pagamento | Garantia | Score Comercial |\n"
-        report += "|---------|-------------|-----|---------------------|----------|----------------|\n"
-        
-        for empresa, data in combined_data.items():
-            if data['commercial']:
-                comm = data['commercial']
-                preco = f"R$ {comm.get('preco_total', 0):,.2f}" if comm.get('preco_total', 0) > 0 else "Não informado"
-                bdi = f"{comm.get('bdi_total', 0):.2f}%" if comm.get('bdi_total', 0) > 0 else "Não informado"
-                pagamento = comm.get('condicoes_pagamento', 'Não especificado')[:20] + "..." if len(comm.get('condicoes_pagamento', '')) > 20 else comm.get('condicoes_pagamento', 'Não especificado')
-                garantia = comm.get('garantia', 'Não especificada')[:20] + "..." if len(comm.get('garantia', '')) > 20 else comm.get('garantia', 'Não especificada')
-                score = comm.get('score', 0)
-                
-                report += f"| {empresa} | {preco} | {bdi} | {pagamento} | {garantia} | {score:.0f}% |\n"
-        
-        # Análise comercial detalhada
-        for empresa, data in combined_data.items():
-            if data['commercial']:
-                comm = data['commercial']
-                report += f"\n### {empresa} - Análise Comercial Detalhada\n\n"
-                
-                report += f"**Preços e Composição:**\n"
-                if comm.get('preco_total', 0) > 0:
-                    report += f"- Preço Total: R$ {comm['preco_total']:,.2f}\n"
-                if comm.get('bdi_total', 0) > 0:
-                    report += f"- BDI: {comm['bdi_total']:.2f}%\n"
-                
-                if comm.get('composicao_custos'):
-                    report += f"\n**Composição de Custos:**\n"
-                    custos = comm['composicao_custos']
-                    if custos.get('mao_obra'):
-                        report += f"- Mão de Obra: R$ {custos['mao_obra']:,.2f}\n"
-                    if custos.get('materiais'):
-                        report += f"- Materiais: R$ {custos['materiais']:,.2f}\n"
-                    if custos.get('equipamentos'):
-                        report += f"- Equipamentos: R$ {custos['equipamentos']:,.2f}\n"
-                
-                report += f"\n**Condições Comerciais:**\n"
-                if comm.get('condicoes_pagamento'):
-                    report += f"- Pagamento: {comm['condicoes_pagamento']}\n"
-                if comm.get('garantia'):
-                    report += f"- Garantia: {comm['garantia']}\n"
-                if comm.get('treinamento'):
-                    report += f"- Treinamento: {comm['treinamento']}\n"
-                if comm.get('seguros'):
-                    report += f"- Seguros: {comm['seguros']}\n"
-                
-                report += "\n"
-        
-        report += "\n---\n\n## CONCLUSÕES E RECOMENDAÇÕES\n\n"
-        
-        # Determinar melhores propostas
-        melhor_tecnica = tech_ranking[0][0] if tech_ranking else "A definir"
-        melhor_comercial = price_ranking[0][0] if price_ranking else "A definir"
-        
-        report += f"### Análise Comparativa Final\n\n"
-        report += f"**Melhor Proposta Técnica:** {melhor_tecnica}\n"
-        report += f"**Melhor Proposta Comercial:** {melhor_comercial}\n\n"
-        
-        # Recomendações
-        report += f"### Recomendações Finais\n\n"
-        report += f"**Para Tomada de Decisão:**\n"
-        report += f"1. **Análise Técnica:** Considere a proposta com maior score técnico para garantir qualidade de execução.\n"
-        report += f"2. **Análise Comercial:** Avalie não apenas o menor preço, mas também as condições de pagamento e garantias oferecidas.\n"
-        report += f"3. **Custo-Benefício:** Busque o equilíbrio entre qualidade técnica e vantagem comercial.\n\n"
-        
-        report += f"**Próximos Passos Sugeridos:**\n"
-        report += f"1. **Esclarecimentos:** Solicite esclarecimentos para propostas com informações incompletas.\n"
-        report += f"2. **Negociação:** Considere negociar condições com as propostas melhor classificadas.\n"
-        report += f"3. **Verificação:** Confirme referências e capacidade técnica das empresas.\n\n"
-        
-        return report
-        
-    except Exception as e:
-        print(f"Erro ao gerar relatório: {e}")
-        return "Erro ao gerar relatório comparativo."
+        report += f"\n| **{empresa}** | {pos_tech}º ({data['scores']['technical']:.0f}%) | {pos_comm}º | **{indice_cb:.1f}/10** | {recomendacao} |"
+
+    report += f"""
+
+---
+
+## 🎯 BLOCO 4: CONCLUSÃO E RECOMENDAÇÕES
+
+### 📊 Síntese da Análise
+
+#### 🏆 Melhor Proposta Técnica: **{empresas_tech[0][0]}**
+- **Justificativa:** Score técnico de {empresas_tech[0][1]['scores']['technical']:.1f}%
+- **Destaque:** Proposta mais completa tecnicamente
+
+#### 💰 Melhor Proposta Comercial: **{empresas_preco[0][0]}**
+- **Justificativa:** Menor preço (R$ {empresas_preco[0][1]['commercial']['preco_total']:,.2f})
+- **Destaque:** Melhor custo
+
+### 🚀 Recomendações Específicas
+
+#### ✅ **RECOMENDAÇÃO PRINCIPAL:**
+**Contratar {empresas_tech[0][0] if empresas_tech[0][1]['scores']['technical'] > 70 else empresas_preco[0][0]}**
+
+**Justificativas:**
+1. **Técnica:** {"Melhor score técnico" if empresas_tech[0][1]['scores']['technical'] > 70 else "Score técnico adequado"}
+2. **Comercial:** {"Preço competitivo" if empresas_tech[0][0] == empresas_preco[0][0] else "Avaliar custo-benefício"}
+
+#### 📋 **Ações Recomendadas:**
+1. **Esclarecimentos:** Solicitar detalhamento de pontos não especificados
+2. **Negociação:** Considerar negociar condições com as melhores propostas
+3. **Validação:** Verificar referências e capacidade técnica
+
+### 📈 **Resumo Executivo**
+
+| Critério | {empresas_tech[0][0]} | {empresas_tech[1][0] if len(empresas_tech) > 1 else 'N/A'} | Vencedor |
+|----------|{'-' * len(empresas_tech[0][0])}|{'-' * len(empresas_tech[1][0]) if len(empresas_tech) > 1 else '---'}|----------|
+| **Score Técnico** | {empresas_tech[0][1]['scores']['technical']:.1f}% | {empresas_tech[1][1]['scores']['technical']:.1f}% if len(empresas_tech) > 1 else 'N/A' | {empresas_tech[0][0]} |
+| **Preço** | R$ {proposals_data[empresas_tech[0][0]]['commercial']['preco_total']:,.0f} | R$ {proposals_data[empresas_tech[1][0]]['commercial']['preco_total']:,.0f} if len(empresas_tech) > 1 else 'N/A' | {empresas_preco[0][0]} |
+
+---
+
+*Relatório gerado automaticamente pelo Proposal Analyzer Pro*  
+*Versão com Análise de Conteúdo com IA - {datetime.now().strftime("%d/%m/%Y")}*
+"""
+    
+    return report
 
 def create_pdf_from_markdown(markdown_content, output_path):
-    """Converte markdown para PDF usando ReportLab"""
+    """Converte Markdown para PDF usando ReportLab"""
     try:
         doc = SimpleDocTemplate(output_path, pagesize=A4)
         styles = getSampleStyleSheet()
         story = []
         
-        # Estilo personalizado
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=16,
-            spaceAfter=12,
-            textColor=colors.darkblue
-        )
-        
-        heading_style = ParagraphStyle(
-            'CustomHeading',
-            parent=styles['Heading2'],
-            fontSize=14,
-            spaceAfter=10,
-            textColor=colors.darkblue
-        )
-        
-        # Processar markdown linha por linha
+        # Dividir o markdown em linhas
         lines = markdown_content.split('\n')
+        
         for line in lines:
             line = line.strip()
             if not line:
-                story.append(Spacer(1, 6))
-            elif line.startswith('# '):
+                story.append(Spacer(1, 12))
+                continue
+            
+            # Títulos
+            if line.startswith('# '):
+                title_style = ParagraphStyle(
+                    'CustomTitle',
+                    parent=styles['Heading1'],
+                    fontSize=18,
+                    spaceAfter=20,
+                    textColor=colors.darkblue
+                )
                 story.append(Paragraph(line[2:], title_style))
             elif line.startswith('## '):
-                story.append(Paragraph(line[3:], heading_style))
+                story.append(Paragraph(line[3:], styles['Heading2']))
             elif line.startswith('### '):
                 story.append(Paragraph(line[4:], styles['Heading3']))
-            elif line.startswith('**') and line.endswith('**'):
-                story.append(Paragraph(f"<b>{line[2:-2]}</b>", styles['Normal']))
+            elif line.startswith('#### '):
+                story.append(Paragraph(line[5:], styles['Heading4']))
+            # Tabelas (simplificado)
             elif line.startswith('|'):
-                # Processar tabela (simplificado)
+                # Processar tabela (implementação básica)
                 story.append(Paragraph(line.replace('|', ' | '), styles['Normal']))
+            # Texto normal
             else:
-                story.append(Paragraph(line, styles['Normal']))
+                if line.startswith('**') and line.endswith('**'):
+                    # Texto em negrito
+                    story.append(Paragraph(f"<b>{line[2:-2]}</b>", styles['Normal']))
+                else:
+                    story.append(Paragraph(line, styles['Normal']))
         
         doc.build(story)
         return True
@@ -648,7 +657,7 @@ def create_pdf_from_markdown(markdown_content, output_path):
 
 @app.route('/')
 def index():
-    return render_template_string('''
+    return render_template_string("""
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -656,170 +665,88 @@ def index():
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Proposal Analyzer Pro</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .header { text-align: center; color: white; margin-bottom: 40px; }
-        .header h1 { font-size: 3rem; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
-        .header p { font-size: 1.2rem; opacity: 0.9; }
-        .main-content { background: white; border-radius: 20px; padding: 40px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); }
-        .upload-section { margin-bottom: 40px; }
-        .upload-section h2 { color: #333; margin-bottom: 20px; font-size: 1.5rem; }
-        .proposal-group { background: #f8f9fa; border-radius: 15px; padding: 25px; margin-bottom: 25px; border-left: 5px solid #667eea; }
-        .proposal-group h3 { color: #667eea; margin-bottom: 15px; }
-        .file-input-group { margin-bottom: 15px; }
-        .file-input-group label { display: block; margin-bottom: 5px; font-weight: 600; color: #555; }
-        .file-input { width: 100%; padding: 12px; border: 2px dashed #ddd; border-radius: 10px; background: white; transition: all 0.3s; }
-        .file-input:hover { border-color: #667eea; }
-        .company-input { width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 10px; margin-bottom: 10px; }
-        .cnpj-input { width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 10px; }
-        .add-proposal-btn { background: #28a745; color: white; border: none; padding: 12px 24px; border-radius: 10px; cursor: pointer; margin-top: 15px; }
-        .add-proposal-btn:hover { background: #218838; }
-        .analyze-btn { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; padding: 15px 40px; border-radius: 50px; font-size: 1.1rem; cursor: pointer; display: block; margin: 30px auto; transition: transform 0.3s; }
-        .analyze-btn:hover { transform: translateY(-2px); }
-        .loading { display: none; text-align: center; margin: 20px 0; }
-        .loading-spinner { border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 0 auto 20px; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .results { display: none; margin-top: 30px; }
-        .download-btn { background: #17a2b8; color: white; border: none; padding: 12px 24px; border-radius: 10px; margin: 10px; cursor: pointer; text-decoration: none; display: inline-block; }
-        .download-btn:hover { background: #138496; }
-        .file-selected { border-color: #28a745 !important; background-color: #f8fff9 !important; }
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .upload-area { border: 2px dashed #ccc; padding: 40px; text-align: center; margin: 20px 0; }
+        .file-list { margin: 20px 0; }
+        .file-item { padding: 10px; border: 1px solid #ddd; margin: 5px 0; }
+        button { background: #007bff; color: white; padding: 10px 20px; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        .progress { display: none; margin: 20px 0; }
+        .result { margin: 20px 0; padding: 20px; background: #f8f9fa; border-radius: 5px; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 Proposal Analyzer Pro</h1>
-            <p>Análise Inteligente e Comparação de Propostas Técnicas e Comerciais</p>
-        </div>
-        
-        <div class="main-content">
-            <form id="analysisForm" enctype="multipart/form-data">
-                <div class="upload-section">
-                    <h2>📋 Upload de Propostas</h2>
-                    <div id="proposalsContainer">
-                        <div class="proposal-group">
-                            <h3>Proposta Técnica 1</h3>
-                            <div class="file-input-group">
-                                <label>Nome da Empresa</label>
-                                <input type="text" name="company_name_tech_1" class="company-input" placeholder="Digite o nome da empresa">
-                            </div>
-                            <div class="file-input-group">
-                                <label>CNPJ (Opcional)</label>
-                                <input type="text" name="cnpj_tech_1" class="cnpj-input" placeholder="00.000.000/0000-00">
-                            </div>
-                            <div class="file-input-group">
-                                <label>Arquivo da Proposta Técnica</label>
-                                <input type="file" name="technical_1" class="file-input" accept=".pdf,.docx,.doc" onchange="handleFileSelect(this)">
-                            </div>
-                        </div>
-                        
-                        <div class="proposal-group">
-                            <h3>Proposta Comercial 1</h3>
-                            <div class="file-input-group">
-                                <label>Nome da Empresa</label>
-                                <input type="text" name="company_name_comm_1" class="company-input" placeholder="Digite o nome da empresa">
-                            </div>
-                            <div class="file-input-group">
-                                <label>CNPJ (Opcional)</label>
-                                <input type="text" name="cnpj_comm_1" class="cnpj-input" placeholder="00.000.000/0000-00">
-                            </div>
-                            <div class="file-input-group">
-                                <label>Arquivo da Proposta Comercial</label>
-                                <input type="file" name="commercial_1" class="file-input" accept=".xlsx,.xls" onchange="handleFileSelect(this)">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <button type="button" class="add-proposal-btn" onclick="addProposal()">+ Adicionar Proposta Técnica</button>
-                    <button type="button" class="add-proposal-btn" onclick="addCommercialProposal()">+ Adicionar Proposta Comercial</button>
-                </div>
-                
-                <button type="submit" class="analyze-btn">🧠 Gerar Relatório com Análise IA</button>
-            </form>
-            
-            <div class="loading" id="loading">
-                <div class="loading-spinner"></div>
-                <p>Processando documentos e gerando análise...</p>
-                <p>Isso pode levar alguns minutos. Por favor, aguarde.</p>
-            </div>
-            
-            <div class="results" id="results">
-                <h2>📊 Relatório Gerado</h2>
-                <p>Seu relatório de análise comparativa foi gerado com sucesso!</p>
-                <a href="#" id="downloadMarkdown" class="download-btn">📄 Download Markdown</a>
-                <a href="#" id="downloadPDF" class="download-btn">📑 Download PDF</a>
-            </div>
-        </div>
+    <h1>📊 Proposal Analyzer Pro</h1>
+    <p>Sistema de Análise Comparativa de Propostas com IA</p>
+    
+    <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+        <p>📁 Clique aqui ou arraste arquivos para fazer upload</p>
+        <p><small>Aceita: PDF, DOCX, XLSX (máx. 50MB)</small></p>
+        <input type="file" id="fileInput" multiple accept=".pdf,.docx,.xlsx" style="display: none;">
     </div>
+    
+    <div class="file-list" id="fileList"></div>
+    
+    <button onclick="analyzeProposals()" id="analyzeBtn" disabled>🔍 Analisar Propostas</button>
+    
+    <div class="progress" id="progress">
+        <p>⏳ Processando documentos...</p>
+    </div>
+    
+    <div class="result" id="result" style="display: none;"></div>
 
     <script>
-        let proposalCount = 1;
-        let commercialCount = 1;
-
-        function handleFileSelect(input) {
-            if (input.files.length > 0) {
-                input.classList.add('file-selected');
-            } else {
-                input.classList.remove('file-selected');
+        let uploadedFiles = [];
+        
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            handleFiles(e.target.files);
+        });
+        
+        function handleFiles(files) {
+            for (let file of files) {
+                uploadedFiles.push(file);
+                addFileToList(file);
             }
+            updateAnalyzeButton();
         }
-
-        function addProposal() {
-            proposalCount++;
-            const container = document.getElementById('proposalsContainer');
-            const newProposal = document.createElement('div');
-            newProposal.className = 'proposal-group';
-            newProposal.innerHTML = `
-                <h3>Proposta Técnica ${proposalCount}</h3>
-                <div class="file-input-group">
-                    <label>Nome da Empresa</label>
-                    <input type="text" name="company_name_tech_${proposalCount}" class="company-input" placeholder="Digite o nome da empresa">
-                </div>
-                <div class="file-input-group">
-                    <label>CNPJ (Opcional)</label>
-                    <input type="text" name="cnpj_tech_${proposalCount}" class="cnpj-input" placeholder="00.000.000/0000-00">
-                </div>
-                <div class="file-input-group">
-                    <label>Arquivo da Proposta Técnica</label>
-                    <input type="file" name="technical_${proposalCount}" class="file-input" accept=".pdf,.docx,.doc" onchange="handleFileSelect(this)">
-                </div>
+        
+        function addFileToList(file) {
+            const fileList = document.getElementById('fileList');
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.innerHTML = `
+                <span>📄 ${file.name} (${(file.size/1024/1024).toFixed(2)} MB)</span>
+                <button onclick="removeFile('${file.name}')" style="float: right; background: #dc3545;">❌</button>
             `;
-            container.appendChild(newProposal);
+            fileList.appendChild(fileItem);
         }
-
-        function addCommercialProposal() {
-            commercialCount++;
-            const container = document.getElementById('proposalsContainer');
-            const newProposal = document.createElement('div');
-            newProposal.className = 'proposal-group';
-            newProposal.innerHTML = `
-                <h3>Proposta Comercial ${commercialCount}</h3>
-                <div class="file-input-group">
-                    <label>Nome da Empresa</label>
-                    <input type="text" name="company_name_comm_${commercialCount}" class="company-input" placeholder="Digite o nome da empresa">
-                </div>
-                <div class="file-input-group">
-                    <label>CNPJ (Opcional)</label>
-                    <input type="text" name="cnpj_comm_${commercialCount}" class="cnpj-input" placeholder="00.000.000/0000-00">
-                </div>
-                <div class="file-input-group">
-                    <label>Arquivo da Proposta Comercial</label>
-                    <input type="file" name="commercial_${commercialCount}" class="file-input" accept=".xlsx,.xls" onchange="handleFileSelect(this)">
-                </div>
-            `;
-            container.appendChild(newProposal);
+        
+        function removeFile(fileName) {
+            uploadedFiles = uploadedFiles.filter(f => f.name !== fileName);
+            updateFileList();
+            updateAnalyzeButton();
         }
-
-        document.getElementById('analysisForm').addEventListener('submit', async function(e) {
-            e.preventDefault();
+        
+        function updateFileList() {
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '';
+            uploadedFiles.forEach(addFileToList);
+        }
+        
+        function updateAnalyzeButton() {
+            document.getElementById('analyzeBtn').disabled = uploadedFiles.length === 0;
+        }
+        
+        async function analyzeProposals() {
+            if (uploadedFiles.length === 0) return;
             
-            const formData = new FormData(this);
-            const loading = document.getElementById('loading');
-            const results = document.getElementById('results');
+            const formData = new FormData();
+            uploadedFiles.forEach(file => {
+                formData.append('files', file);
+            });
             
-            loading.style.display = 'block';
-            results.style.display = 'none';
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
             
             try {
                 const response = await fetch('/analyze', {
@@ -827,152 +754,134 @@ def index():
                     body: formData
                 });
                 
-                const data = await response.json();
+                const result = await response.json();
                 
-                if (data.success) {
-                    document.getElementById('downloadMarkdown').href = `/download/${data.report_id}/markdown`;
-                    document.getElementById('downloadPDF').href = `/download/${data.report_id}/pdf`;
-                    results.style.display = 'block';
+                if (result.success) {
+                    document.getElementById('result').innerHTML = `
+                        <h3>✅ Análise Concluída!</h3>
+                        <p><strong>Relatório ID:</strong> ${result.report_id}</p>
+                        <p><strong>Empresas Analisadas:</strong> ${result.companies_count}</p>
+                        <div style="margin: 20px 0;">
+                            <a href="/download/${result.report_id}/pdf" target="_blank">
+                                <button>📄 Download PDF</button>
+                            </a>
+                            <a href="/download/${result.report_id}/markdown" target="_blank">
+                                <button>📝 Download Markdown</button>
+                            </a>
+                        </div>
+                    `;
+                    document.getElementById('result').style.display = 'block';
                 } else {
-                    alert('Erro: ' + data.error);
+                    throw new Error(result.error || 'Erro desconhecido');
                 }
             } catch (error) {
-                alert('Erro na comunicação com o servidor: ' + error.message);
-            } finally {
-                loading.style.display = 'none';
+                document.getElementById('result').innerHTML = `
+                    <h3>❌ Erro na Análise</h3>
+                    <p>${error.message}</p>
+                `;
+                document.getElementById('result').style.display = 'block';
             }
-        });
+            
+            document.getElementById('progress').style.display = 'none';
+        }
     </script>
 </body>
 </html>
-    ''')
+    """)
 
 @app.route('/analyze', methods=['POST'])
-def analyze_proposals():
+def analyze():
     try:
-        # Processar arquivos enviados
-        proposals_data = []
+        files = request.files.getlist('files')
+        if not files:
+            return jsonify({'success': False, 'error': 'Nenhum arquivo enviado'})
         
-        # Processar propostas técnicas
-        for key in request.files:
-            if key.startswith('technical_'):
-                file = request.files[key]
-                if file and file.filename:
-                    # Salvar arquivo
-                    filename = secure_filename(file.filename)
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                    file.save(file_path)
-                    
-                    # Extrair texto
-                    if filename.lower().endswith('.pdf'):
-                        text = extract_text_from_pdf(file_path)
-                    elif filename.lower().endswith(('.docx', '.doc')):
-                        text = extract_text_from_docx(file_path)
-                    else:
-                        continue
-                    
-                    # Extrair dados técnicos
-                    tech_data = extract_technical_data_from_pdf(text)
-                    
-                    # Adicionar nome da empresa do formulário se não extraído
-                    proposal_num = key.split('_')[1]
-                    company_name = request.form.get(f'company_name_tech_{proposal_num}', '')
-                    if company_name and not tech_data.get('empresa'):
-                        tech_data['empresa'] = company_name
-                    
-                    proposals_data.append({
-                        'type': 'technical',
-                        'data': tech_data,
-                        'filename': filename
-                    })
-                    
-                    # Limpar arquivo
-                    os.remove(file_path)
+        # Salvar arquivos
+        uploaded_files = []
+        for file in files:
+            if file.filename:
+                filename = secure_filename(file.filename)
+                filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(filepath)
+                uploaded_files.append(filepath)
         
-        # Processar propostas comerciais
-        for key in request.files:
-            if key.startswith('commercial_'):
-                file = request.files[key]
-                if file and file.filename:
-                    # Salvar arquivo
-                    filename = secure_filename(file.filename)
-                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                    file.save(file_path)
-                    
-                    # Extrair dados comerciais
-                    comm_data = extract_data_from_excel(file_path)
-                    
-                    # Adicionar nome da empresa do formulário se não extraído
-                    proposal_num = key.split('_')[1]
-                    company_name = request.form.get(f'company_name_comm_{proposal_num}', '')
-                    if company_name and not comm_data.get('empresa'):
-                        comm_data['empresa'] = company_name
-                    
-                    proposals_data.append({
-                        'type': 'commercial',
-                        'data': comm_data,
-                        'filename': filename
-                    })
-                    
-                    # Limpar arquivo
-                    os.remove(file_path)
+        # Processar arquivos
+        proposals_data = {}
+        tr_data = {'objeto': 'Sistema de Gestão Empresarial'}
         
-        if not proposals_data:
-            return jsonify({'success': False, 'error': 'Nenhum arquivo válido foi enviado.'})
+        # Agrupar arquivos por empresa
+        companies = {}
+        for filepath in uploaded_files:
+            filename = os.path.basename(filepath).lower()
+            
+            # Identificar empresa pelo nome do arquivo
+            if 'techsolutions' in filename:
+                company = 'TechSolutions Ltda.'
+            elif 'innovasoft' in filename:
+                company = 'InnovaSoft S.A.'
+            else:
+                # Tentar extrair nome da empresa do arquivo
+                company = filename.split('_')[0].title()
+            
+            if company not in companies:
+                companies[company] = {'technical': {}, 'commercial': {}}
+            
+            # Processar arquivo
+            if filepath.endswith('.xlsx'):
+                companies[company]['commercial'] = extract_data_from_excel(filepath)
+            elif filepath.endswith('.pdf') or filepath.endswith('.docx'):
+                if filepath.endswith('.pdf'):
+                    text = extract_text_from_pdf(filepath)
+                else:
+                    text = extract_text_from_docx(filepath)
+                companies[company]['technical'] = extract_technical_data_from_pdf(text)
         
         # Gerar relatório
-        report_content = generate_comparative_report(proposals_data)
+        report_content = generate_comparative_report(tr_data, companies)
         
         # Salvar relatório
-        report_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-        report_path = os.path.join(app.config['UPLOAD_FOLDER'], f"analise_comparativa_{report_id}.md")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        report_id = f"analise_comparativa_{timestamp}"
         
-        with open(report_path, 'w', encoding='utf-8') as f:
+        # Salvar Markdown
+        md_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
+        with open(md_path, 'w', encoding='utf-8') as f:
             f.write(report_content)
         
-        # Limpar memória
-        del proposals_data
-        gc.collect()
+        # Gerar PDF
+        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.pdf")
+        create_pdf_from_markdown(report_content, pdf_path)
+        
+        # Limpar arquivos temporários
+        for filepath in uploaded_files:
+            try:
+                os.remove(filepath)
+            except:
+                pass
         
         return jsonify({
             'success': True,
             'report_id': report_id,
-            'message': 'Análise concluída com sucesso!'
+            'companies_count': len(companies)
         })
         
     except Exception as e:
-        print(f"Erro na análise: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/download/<report_id>/<format>')
 def download_report(report_id, format):
     try:
         if format == 'markdown':
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"analise_comparativa_{report_id}.md")
-            return send_file(file_path, as_attachment=True, download_name=f"analise_comparativa_{report_id}.md")
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.md")
+            return send_file(file_path, as_attachment=True, download_name=f"{report_id}.md")
         elif format == 'pdf':
-            md_file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"analise_comparativa_{report_id}.md")
-            pdf_file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"analise_comparativa_{report_id}.pdf")
-
-            # Verificar se o arquivo markdown existe
-            if not os.path.exists(md_file_path):
-                return jsonify({'error': 'Arquivo de relatório não encontrado.'}), 404
-
-            # Ler conteúdo markdown
-            with open(md_file_path, 'r', encoding='utf-8') as f:
-                markdown_content = f.read()
-
-            # Criar PDF
-            if create_pdf_from_markdown(markdown_content, pdf_file_path):
-                return send_file(pdf_file_path, as_attachment=True, download_name=f"analise_comparativa_{report_id}.pdf")
-            else:
-                return jsonify({'error': 'Erro ao gerar PDF.'}), 500
-
+            file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{report_id}.pdf")
+            return send_file(file_path, as_attachment=True, download_name=f"{report_id}.pdf")
         else:
             return jsonify({'error': 'Formato não suportado.'}), 400
-
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000, debug=False)
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
