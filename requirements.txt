@@ -6,4 +6,3 @@ PyPDF2==3.0.1
 reportlab==4.0.4
 azure-ai-documentintelligence==1.0.0b1
 azure-core==1.29.5
-Downgrade pandas para 1.5.3 para resolver erro de build
