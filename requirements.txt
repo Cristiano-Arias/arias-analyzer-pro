@@ -1,9 +1,9 @@
 Flask==2.3.3
 Flask-CORS==4.0.0
-pandas==2.0.3
+pandas==1.5.3  # <-- ALTERADO AQUI
 openpyxl==3.1.2
 PyPDF2==3.0.1
 reportlab==4.0.4
 azure-ai-documentintelligence==1.0.0b1
 azure-core==1.29.5
-Werkzeug==2.3.7
+Downgrade pandas para 1.5.3 para resolver erro de build
