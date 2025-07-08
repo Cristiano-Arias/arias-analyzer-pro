@@ -1,0 +1,2 @@
+python-3.10.12
+Adiciona runtime.txt para especificar Python 3.10
