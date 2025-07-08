@@ -42,7 +42,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
 # Configurações Azure (SUBSTITUA PELOS SEUS VALORES)
 AZURE_ENDPOINT = "https://proposal-analyzer-di.cognitiveservices.azure.com/"
-AZURE_KEY = "SUA_CHAVE_AZURE_AQUI"  # IMPORTANTE: Substitua pela sua chave
+AZURE_KEY = "9DjJwSTRXOYAFs7NDZLDNsK1XSPzvOQZve6X7BidDZP1r8F4hkkwJQQJ99BGACZoyfiXJ3w3AAALACOGVe3Q"  # IMPORTANTE: Substitua pela sua chave
 
 # Criar diretório de upload se não existir
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
