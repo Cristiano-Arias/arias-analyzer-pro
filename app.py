@@ -1,41 +1,29 @@
-from flask import Flask, request, render_template, send_file
-from werkzeug.utils import secure_filename
-import os
 from docx import Document
+from docx.shared import Pt
+from docx.oxml.ns import qn
+from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 
-app = Flask(__name__)
-UPLOAD_FOLDER = 'uploads'
-REPORT_PATH = 'report.docx'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+def gerar_relatorio_word(nome_arquivo_analisado, resultado_analise, nome_arquivo_saida):
+    document = Document()
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+    # Título principal
+    titulo = document.add_heading('Relatório de Análise - Proposal Analyzer by Arias', level=1)
+    titulo.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    uploaded_file = request.files['file']
-    filename = secure_filename(uploaded_file.filename)
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    uploaded_file.save(filepath)
+    # Arquivo analisado
+    par_arquivo = document.add_paragraph()
+    par_arquivo.add_run('Arquivo analisado: ').bold = True
+    par_arquivo.add_run(nome_arquivo_analisado)
 
-    # Análise simulada (por enquanto)
-    analysis_result = f"Análise simulada para o arquivo: {filename}"
+    document.add_paragraph('')
 
-    # Criar relatório Word
-    doc = Document()
-    doc.add_heading('Relatório de Análise - Proposal Analyzer by Arias', 0)
-    doc.add_paragraph(f'Arquivo analisado: {filename}')
-    doc.add_paragraph('Resultado da análise:')
-    doc.add_paragraph(analysis_result)
-    doc.save(REPORT_PATH)
+    # Subtítulo
+    subtitulo = document.add_paragraph()
+    subtitulo.add_run('Resultado da Análise:').bold = True
 
-    return render_template('result.html')
+    # Conteúdo da análise (formatado em parágrafos separados)
+    for item in resultado_analise.split('\n'):
+        document.add_paragraph(item, style='Normal')
 
-@app.route('/download')
-def download_report():
-    return send_file(REPORT_PATH, as_attachment=True)
-
-if __name__ == '__main__':
-    app.run(debug=True)
-
+    # Salvar
+    document.save(nome_arquivo_saida)
