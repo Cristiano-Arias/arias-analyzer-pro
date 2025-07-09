@@ -100,12 +100,17 @@ class AzureDocumentIntelligenceExtractor:
             'empresa': '',
             'cnpj': '',
             'metodologia': '',
+            'metodologia_detalhada': '',
             'prazo_dias': 0,
+            'cronograma_fases': [],
             'equipe_total': 0,
+            'equipe_detalhada': {},
             'equipamentos': [],
             'materiais': [],
             'tecnologias': [],
-            'cronograma': [],
+            'arquitetura_sistema': '',
+            'requisitos_tecnicos': [],
+            'riscos_tecnicos': [],
             'preco_total': 0.0,
             'bdi_percentual': 0.0,
             'condicoes_pagamento': '',
@@ -212,6 +217,25 @@ class AzureDocumentIntelligenceExtractor:
                 data['cnpj'] = matches[0]
                 break
         
+        # Padrões para metodologia (mais detalhados)
+        metodologia_patterns = [
+            r'(?:metodologia|abordagem)[:\s]*([^.]+(?:scrum|kanban|ágil|agile|cascata|waterfall)[^.]*)',
+            r'((?:scrum|kanban|ágil|agile|cascata|waterfall)[^.]*)',
+            r'(?:metodologia|método)[:\s]*([^.]{20,200})'
+        ]
+        
+        for pattern in metodologia_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches and not data['metodologia']:
+                data['metodologia'] = matches[0].strip()
+                break
+        
+        # Extrair cronograma detalhado
+        self._extract_cronograma_fases(text, data)
+        
+        # Extrair equipe detalhada
+        self._extract_equipe_detalhada(text, data)
+        
         # Padrões para prazo (melhorados)
         prazo_patterns = [
             r'(?:prazo|cronograma|tempo)[:\s]*(\d+)\s*dias?',
@@ -279,14 +303,90 @@ class AzureDocumentIntelligenceExtractor:
                     continue
         
         # Extrair tecnologias
-        tech_keywords = ['SAP', 'Microsoft', 'Oracle', 'Java', 'Python', 'SQL', 'Azure', 'AWS', 'Scrum', 'Kanban']
+        tech_keywords = ['SAP', 'Microsoft', 'Oracle', 'Java', 'Python', 'SQL', 'Azure', 'AWS', 'Scrum', 'Kanban', 'React', 'Angular', 'Node.js']
         for tech in tech_keywords:
             if tech.lower() in text.lower():
                 if tech not in data['tecnologias']:
                     data['tecnologias'].append(tech)
         
+        # Extrair arquitetura do sistema
+        self._extract_arquitetura_sistema(text, data)
+        
+        # Extrair requisitos técnicos
+        self._extract_requisitos_tecnicos(text, data)
+        
         # Extrair equipamentos e materiais das tabelas
         self._extract_items_from_tables(data)
+    
+    def _extract_cronograma_fases(self, text: str, data: Dict):
+        """Extrai fases do cronograma"""
+        fase_patterns = [
+            r'(?:fase|etapa)\s*\d+[:\s]*([^.]{10,100})',
+            r'(\d+[°º]?\s*(?:fase|etapa)[:\s]*[^.]{10,100})',
+            r'((?:análise|desenvolvimento|teste|implantação)[^.]{10,100})'
+        ]
+        
+        fases = []
+        for pattern in fase_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                if match not in fases and len(match.strip()) > 10:
+                    fases.append(match.strip())
+        
+        data['cronograma_fases'] = fases[:6]  # Máximo 6 fases
+    
+    def _extract_equipe_detalhada(self, text: str, data: Dict):
+        """Extrai detalhes da equipe"""
+        equipe_patterns = [
+            r'(\d+)\s*(?:gerente|coordenador|líder)',
+            r'(\d+)\s*(?:desenvolvedor|programador)',
+            r'(\d+)\s*(?:analista|arquiteto)',
+            r'(\d+)\s*(?:testador|qa)'
+        ]
+        
+        equipe_detalhada = {}
+        for pattern in equipe_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                if 'gerente' in pattern or 'coordenador' in pattern or 'líder' in pattern:
+                    equipe_detalhada['gerencia'] = int(matches[0])
+                elif 'desenvolvedor' in pattern or 'programador' in pattern:
+                    equipe_detalhada['desenvolvimento'] = int(matches[0])
+                elif 'analista' in pattern or 'arquiteto' in pattern:
+                    equipe_detalhada['analise'] = int(matches[0])
+                elif 'testador' in pattern or 'qa' in pattern:
+                    equipe_detalhada['testes'] = int(matches[0])
+        
+        data['equipe_detalhada'] = equipe_detalhada
+    
+    def _extract_arquitetura_sistema(self, text: str, data: Dict):
+        """Extrai informações sobre arquitetura do sistema"""
+        arquitetura_patterns = [
+            r'(?:arquitetura|estrutura)[:\s]*([^.]{20,200})',
+            r'(?:tecnologia|plataforma)[:\s]*([^.]{20,200})',
+            r'(?:banco de dados|database)[:\s]*([^.]{10,100})'
+        ]
+        
+        for pattern in arquitetura_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches and not data['arquitetura_sistema']:
+                data['arquitetura_sistema'] = matches[0].strip()
+                break
+    
+    def _extract_requisitos_tecnicos(self, text: str, data: Dict):
+        """Extrai requisitos técnicos"""
+        requisitos_keywords = [
+            'alta disponibilidade', 'escalabilidade', 'performance', 'segurança',
+            'backup', 'disaster recovery', 'load balancing', 'clustering',
+            'ssl', 'https', 'criptografia', 'autenticação'
+        ]
+        
+        requisitos = []
+        for req in requisitos_keywords:
+            if req.lower() in text.lower():
+                requisitos.append(req.title())
+        
+        data['requisitos_tecnicos'] = requisitos
     
     def _extract_items_from_tables(self, data: Dict):
         """Extrai equipamentos e materiais das tabelas"""
@@ -328,7 +428,7 @@ class AzureDocumentIntelligenceExtractor:
     def _calculate_confidence_score(self, data: Dict) -> float:
         """Calcula score de confiança baseado nos dados extraídos"""
         score = 0.0
-        total_fields = 8
+        total_fields = 10
         
         if data['empresa']:
             score += 1.0
@@ -345,6 +445,10 @@ class AzureDocumentIntelligenceExtractor:
         if data['bdi_percentual'] > 0:
             score += 1.0
         if data['tecnologias']:
+            score += 1.0
+        if data['cronograma_fases']:
+            score += 1.0
+        if data['arquitetura_sistema']:
             score += 1.0
         
         return (score / total_fields) * 100
@@ -365,12 +469,17 @@ class AzureDocumentIntelligenceExtractor:
                 'empresa': '',
                 'cnpj': '',
                 'metodologia': 'Metodologia não especificada',
+                'metodologia_detalhada': '',
                 'prazo_dias': 0,
+                'cronograma_fases': [],
                 'equipe_total': 0,
+                'equipe_detalhada': {},
                 'equipamentos': [],
                 'materiais': [],
                 'tecnologias': [],
-                'cronograma': [],
+                'arquitetura_sistema': '',
+                'requisitos_tecnicos': [],
+                'riscos_tecnicos': [],
                 'preco_total': 0.0,
                 'bdi_percentual': 0.0,
                 'condicoes_pagamento': '',
@@ -394,12 +503,17 @@ class AzureDocumentIntelligenceExtractor:
                 'empresa': 'Erro na extração',
                 'cnpj': '',
                 'metodologia': 'Erro na extração',
+                'metodologia_detalhada': '',
                 'prazo_dias': 0,
+                'cronograma_fases': [],
                 'equipe_total': 0,
+                'equipe_detalhada': {},
                 'equipamentos': [],
                 'materiais': [],
                 'tecnologias': [],
-                'cronograma': [],
+                'arquitetura_sistema': '',
+                'requisitos_tecnicos': [],
+                'riscos_tecnicos': [],
                 'preco_total': 0.0,
                 'bdi_percentual': 0.0,
                 'condicoes_pagamento': '',
@@ -547,10 +661,11 @@ class ProposalAnalyzer:
         # Consolidar dados (mesclar PDF + Excel da mesma empresa)
         consolidated_proposals = self._consolidate_proposals(proposals)
         
-        # Calcular scores técnicos
+        # Calcular scores técnicos e comerciais
         self._calculate_technical_scores(consolidated_proposals)
+        self._calculate_commercial_scores(consolidated_proposals)
         
-        # Ordenar por ranking
+        # Ordenar por ranking técnico
         consolidated_proposals.sort(key=lambda x: x.get('score_tecnico', 0), reverse=True)
         
         return {
@@ -579,11 +694,17 @@ class ProposalAnalyzer:
                     'empresa': empresa,
                     'cnpj': '',
                     'metodologia': '',
+                    'metodologia_detalhada': '',
                     'prazo_dias': 0,
+                    'cronograma_fases': [],
                     'equipe_total': 0,
+                    'equipe_detalhada': {},
                     'equipamentos': [],
                     'materiais': [],
                     'tecnologias': [],
+                    'arquitetura_sistema': '',
+                    'requisitos_tecnicos': [],
+                    'riscos_tecnicos': [],
                     'preco_total': 0.0,
                     'bdi_percentual': 0.0,
                     'condicoes_pagamento': '',
@@ -595,6 +716,7 @@ class ProposalAnalyzer:
                     },
                     'confidence_score': 0.0,
                     'score_tecnico': 0.0,
+                    'score_comercial': 0.0,
                     'files_processed': []
                 }
             
@@ -608,6 +730,9 @@ class ProposalAnalyzer:
             if proposal.get('metodologia') and not current['metodologia']:
                 current['metodologia'] = proposal['metodologia']
             
+            if proposal.get('metodologia_detalhada') and not current['metodologia_detalhada']:
+                current['metodologia_detalhada'] = proposal['metodologia_detalhada']
+            
             if proposal.get('prazo_dias', 0) > current['prazo_dias']:
                 current['prazo_dias'] = proposal['prazo_dias']
             
@@ -620,7 +745,14 @@ class ProposalAnalyzer:
             if proposal.get('bdi_percentual', 0) > current['bdi_percentual']:
                 current['bdi_percentual'] = proposal['bdi_percentual']
             
+            if proposal.get('arquitetura_sistema') and not current['arquitetura_sistema']:
+                current['arquitetura_sistema'] = proposal['arquitetura_sistema']
+            
             # Mesclar listas
+            for item in proposal.get('cronograma_fases', []):
+                if item not in current['cronograma_fases']:
+                    current['cronograma_fases'].append(item)
+            
             for item in proposal.get('equipamentos', []):
                 if item not in current['equipamentos']:
                     current['equipamentos'].append(item)
@@ -632,6 +764,15 @@ class ProposalAnalyzer:
             for item in proposal.get('tecnologias', []):
                 if item not in current['tecnologias']:
                     current['tecnologias'].append(item)
+            
+            for item in proposal.get('requisitos_tecnicos', []):
+                if item not in current['requisitos_tecnicos']:
+                    current['requisitos_tecnicos'].append(item)
+            
+            # Mesclar dicionários
+            for key, value in proposal.get('equipe_detalhada', {}).items():
+                if value > current['equipe_detalhada'].get(key, 0):
+                    current['equipe_detalhada'][key] = value
             
             # Atualizar composição de custos
             for key, value in proposal.get('composicao_custos', {}).items():
@@ -653,28 +794,28 @@ class ProposalAnalyzer:
             score = 0.0
             max_score = 100.0
             
-            # Metodologia (25 pontos)
+            # Metodologia (30 pontos)
             if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada':
-                metodologia_score = 25.0
+                metodologia_score = 20.0
                 # Bonus para metodologias ágeis
                 if any(term in proposal['metodologia'].lower() for term in ['scrum', 'kanban', 'ágil', 'agile']):
-                    metodologia_score = 25.0
+                    metodologia_score = 30.0
                 elif any(term in proposal['metodologia'].lower() for term in ['cascata', 'waterfall']):
-                    metodologia_score = 15.0
-                else:
                     metodologia_score = 20.0
+                else:
+                    metodologia_score = 25.0
                 score += metodologia_score
             
-            # Prazo (20 pontos)
+            # Prazo (25 pontos)
             if proposal['prazo_dias'] > 0:
                 if proposal['prazo_dias'] <= 90:
-                    score += 20.0  # Prazo excelente
+                    score += 25.0  # Prazo excelente
                 elif proposal['prazo_dias'] <= 120:
-                    score += 15.0  # Prazo bom
+                    score += 20.0  # Prazo bom
                 elif proposal['prazo_dias'] <= 150:
-                    score += 10.0  # Prazo aceitável
+                    score += 15.0  # Prazo aceitável
                 else:
-                    score += 5.0   # Prazo ruim
+                    score += 10.0   # Prazo ruim
             
             # Equipe (20 pontos)
             if proposal['equipe_total'] > 0:
@@ -687,34 +828,88 @@ class ProposalAnalyzer:
                 else:
                     score += 5.0   # Equipe insuficiente
             
-            # Recursos técnicos (15 pontos)
-            recursos_score = 0
-            if proposal['equipamentos']:
-                recursos_score += 7.5
-            if proposal['materiais']:
-                recursos_score += 7.5
-            score += recursos_score
+            # Cronograma detalhado (10 pontos)
+            if proposal['cronograma_fases']:
+                score += min(len(proposal['cronograma_fases']) * 2, 10)
             
             # Tecnologias (10 pontos)
             if proposal['tecnologias']:
                 tech_score = min(len(proposal['tecnologias']) * 2, 10)
                 score += tech_score
             
-            # Completude dos dados (10 pontos)
-            completude_score = (proposal['confidence_score'] / 100) * 10
-            score += completude_score
+            # Arquitetura e requisitos técnicos (15 pontos)
+            if proposal['arquitetura_sistema']:
+                score += 7.5
+            if proposal['requisitos_tecnicos']:
+                score += min(len(proposal['requisitos_tecnicos']) * 1.5, 7.5)
             
             proposal['score_tecnico'] = round(score, 1)
+    
+    def _calculate_commercial_scores(self, proposals: List[Dict]):
+        """Calcula scores comerciais baseado nos dados extraídos"""
+        # Filtrar propostas com preço
+        proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+        
+        if not proposals_with_price:
+            for proposal in proposals:
+                proposal['score_comercial'] = 0.0
+            return
+        
+        # Ordenar por preço para calcular ranking
+        proposals_with_price.sort(key=lambda x: x['preco_total'])
+        
+        for i, proposal in enumerate(proposals_with_price):
+            score = 0.0
+            
+            # Ranking de preço (50 pontos)
+            if i == 0:
+                score += 50.0  # Melhor preço
+            elif i == 1:
+                score += 40.0  # Segundo melhor
+            elif i == 2:
+                score += 30.0  # Terceiro melhor
+            else:
+                score += 20.0  # Demais
+            
+            # BDI razoável (20 pontos)
+            if proposal['bdi_percentual'] > 0:
+                if proposal['bdi_percentual'] <= 25:
+                    score += 20.0  # BDI excelente
+                elif proposal['bdi_percentual'] <= 35:
+                    score += 15.0  # BDI bom
+                elif proposal['bdi_percentual'] <= 45:
+                    score += 10.0  # BDI aceitável
+                else:
+                    score += 5.0   # BDI alto
+            
+            # Composição de custos detalhada (15 pontos)
+            custos = proposal['composicao_custos']
+            if any(custos.values()):
+                score += 15.0
+            
+            # Condições comerciais (15 pontos)
+            if proposal['condicoes_pagamento']:
+                score += 7.5
+            if proposal['garantia']:
+                score += 7.5
+            
+            proposal['score_comercial'] = round(score, 1)
+        
+        # Zerar score das propostas sem preço
+        for proposal in proposals:
+            if proposal['preco_total'] == 0:
+                proposal['score_comercial'] = 0.0
     
     def _generate_summary(self, proposals: List[Dict]) -> Dict[str, Any]:
         """Gera resumo da análise"""
         if not proposals:
             return {}
         
-        # Encontrar melhor e pior proposta
+        # Encontrar melhor proposta técnica e comercial
         best_technical = max(proposals, key=lambda x: x['score_tecnico'])
-        best_price = min([p for p in proposals if p['preco_total'] > 0], 
-                        key=lambda x: x['preco_total'], default=None)
+        
+        proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+        best_commercial = max(proposals_with_price, key=lambda x: x['score_comercial']) if proposals_with_price else None
         
         # Calcular estatísticas
         precos = [p['preco_total'] for p in proposals if p['preco_total'] > 0]
@@ -723,7 +918,7 @@ class ProposalAnalyzer:
         return {
             'total_proposals': len(proposals),
             'best_technical': best_technical['empresa'] if best_technical else '',
-            'best_price': best_price['empresa'] if best_price else '',
+            'best_commercial': best_commercial['empresa'] if best_commercial else '',
             'price_range': {
                 'min': min(precos) if precos else 0,
                 'max': max(precos) if precos else 0,
@@ -736,18 +931,18 @@ class ProposalAnalyzer:
             }
         }
 
-class ReportGenerator:
-    """Gerador de relatórios com formatação visual profissional"""
+class TechnicalReportGenerator:
+    """Gerador de relatório técnico especializado"""
     
     def __init__(self):
         self.styles = getSampleStyleSheet()
         self._setup_custom_styles()
     
     def _setup_custom_styles(self):
-        """Configura estilos personalizados para o relatório"""
+        """Configura estilos personalizados para o relatório técnico"""
         # Título principal
         self.styles.add(ParagraphStyle(
-            name='CustomTitle',
+            name='TechnicalTitle',
             parent=self.styles['Title'],
             fontSize=24,
             spaceAfter=30,
@@ -756,9 +951,9 @@ class ReportGenerator:
             fontName='Helvetica-Bold'
         ))
         
-        # Subtítulo
+        # Subtítulo técnico
         self.styles.add(ParagraphStyle(
-            name='CustomSubtitle',
+            name='TechnicalSubtitle',
             parent=self.styles['Heading1'],
             fontSize=16,
             spaceAfter=20,
@@ -767,9 +962,9 @@ class ReportGenerator:
             fontName='Helvetica-Bold'
         ))
         
-        # Cabeçalho de seção
+        # Cabeçalho de seção técnica
         self.styles.add(ParagraphStyle(
-            name='SectionHeader',
+            name='TechnicalSectionHeader',
             parent=self.styles['Heading2'],
             fontSize=14,
             spaceAfter=15,
@@ -781,17 +976,17 @@ class ReportGenerator:
             borderPadding=5
         ))
         
-        # Texto normal melhorado
+        # Texto normal técnico
         self.styles.add(ParagraphStyle(
-            name='CustomNormal',
+            name='TechnicalNormal',
             parent=self.styles['Normal'],
             fontSize=11,
             spaceAfter=10,
             fontName='Helvetica'
         ))
     
-    def generate_report(self, analysis_result: Dict[str, Any], output_path: str):
-        """Gera relatório PDF com formatação profissional"""
+    def generate_technical_report(self, analysis_result: Dict[str, Any], output_path: str):
+        """Gera relatório técnico especializado"""
         doc = SimpleDocTemplate(
             output_path,
             pagesize=A4,
@@ -803,33 +998,40 @@ class ReportGenerator:
         
         story = []
         
-        # Cabeçalho do relatório
-        self._add_header(story, analysis_result)
+        # Cabeçalho do relatório técnico
+        self._add_technical_header(story, analysis_result)
         
-        # Bloco 1: Resumo do TR
-        self._add_tr_summary(story)
+        # Seção 1: Resumo Técnico do TR
+        self._add_technical_tr_summary(story)
         
-        # Bloco 2: Equalização Técnica
-        self._add_technical_analysis(story, analysis_result['proposals'])
+        # Seção 2: Matriz de Comparação Técnica
+        self._add_technical_matrix(story, analysis_result['proposals'])
         
-        # Bloco 3: Equalização Comercial
-        self._add_commercial_analysis(story, analysis_result['proposals'])
+        # Seção 3: Ranking e Scores Técnicos
+        self._add_technical_ranking(story, analysis_result['proposals'])
         
-        # Bloco 4: Conclusão
-        self._add_conclusion(story, analysis_result)
+        # Seção 4: Análise Detalhada por Empresa
+        self._add_detailed_technical_analysis(story, analysis_result['proposals'])
+        
+        # Seção 5: Recomendações Técnicas
+        self._add_technical_recommendations(story, analysis_result)
         
         doc.build(story)
-        logger.info(f"Relatório gerado: {output_path}")
+        logger.info(f"Relatório técnico gerado: {output_path}")
     
-    def _add_header(self, story: List, analysis_result: Dict):
-        """Adiciona cabeçalho profissional"""
+    def _add_technical_header(self, story: List, analysis_result: Dict):
+        """Adiciona cabeçalho do relatório técnico"""
         # Título principal
-        title = Paragraph("ANÁLISE COMPARATIVA DE PROPOSTAS", self.styles['CustomTitle'])
+        title = Paragraph("ANÁLISE E EQUALIZAÇÃO TÉCNICA DE PROPOSTAS", self.styles['TechnicalTitle'])
         story.append(title)
+        
+        # Subtítulo
+        subtitle = Paragraph("Avaliação Técnica Especializada", self.styles['TechnicalSubtitle'])
+        story.append(subtitle)
         
         # Data de geração
         date_text = f"<b>Data de Geração:</b> {analysis_result['analysis_date']}"
-        date_para = Paragraph(date_text, self.styles['CustomNormal'])
+        date_para = Paragraph(date_text, self.styles['TechnicalNormal'])
         story.append(date_para)
         
         # Linha separadora
@@ -837,76 +1039,83 @@ class ReportGenerator:
         story.append(self._create_separator_line())
         story.append(Spacer(1, 20))
     
-    def _add_tr_summary(self, story: List):
-        """Adiciona resumo do Termo de Referência"""
-        # Título da seção
-        section_title = Paragraph("📋 BLOCO 1: RESUMO DO TERMO DE REFERÊNCIA", self.styles['SectionHeader'])
+    def _add_technical_tr_summary(self, story: List):
+        """Adiciona resumo técnico do TR"""
+        section_title = Paragraph("🔧 SEÇÃO 1: RESUMO TÉCNICO DO TERMO DE REFERÊNCIA", self.styles['TechnicalSectionHeader'])
         story.append(section_title)
         
-        # Objeto
-        story.append(Paragraph("<b>Objeto</b>", self.styles['CustomSubtitle']))
-        story.append(Paragraph("Sistema de Gestão Empresarial", self.styles['CustomNormal']))
+        # Objeto técnico
+        story.append(Paragraph("<b>Objeto Técnico</b>", self.styles['TechnicalSubtitle']))
+        story.append(Paragraph("Sistema de Gestão Empresarial Integrado", self.styles['TechnicalNormal']))
         
-        # Especificações técnicas
-        story.append(Paragraph("<b>Especificações Técnicas Exigidas</b>", self.styles['CustomSubtitle']))
+        # Especificações técnicas detalhadas
+        story.append(Paragraph("<b>Especificações Técnicas Obrigatórias</b>", self.styles['TechnicalSubtitle']))
         specs = [
-            "• Sistema integrado de gestão",
-            "• Módulos: Financeiro, Estoque, Vendas, Compras",
-            "• Interface web responsiva",
-            "• Banco de dados robusto",
-            "• Relatórios gerenciais"
+            "• <b>Arquitetura:</b> Sistema integrado com módulos interoperáveis",
+            "• <b>Módulos Funcionais:</b> Financeiro, Estoque, Vendas, Compras, RH",
+            "• <b>Interface:</b> Web responsiva com suporte a dispositivos móveis",
+            "• <b>Banco de Dados:</b> Robusto, escalável e com backup automático",
+            "• <b>Relatórios:</b> Gerenciais customizáveis e dashboards em tempo real",
+            "• <b>Segurança:</b> Autenticação, autorização e criptografia de dados",
+            "• <b>Performance:</b> Suporte a múltiplos usuários simultâneos"
         ]
         for spec in specs:
-            story.append(Paragraph(spec, self.styles['CustomNormal']))
+            story.append(Paragraph(spec, self.styles['TechnicalNormal']))
         
-        # Metodologia exigida
-        story.append(Paragraph("<b>Metodologia Exigida pelo TR</b>", self.styles['CustomSubtitle']))
+        # Metodologia técnica exigida
+        story.append(Paragraph("<b>Metodologia de Desenvolvimento Exigida</b>", self.styles['TechnicalSubtitle']))
         metodologia = [
-            "• Metodologia ágil ou híbrida",
-            "• Fases bem definidas: Análise, Desenvolvimento, Testes, Implantação",
-            "• Documentação técnica completa",
-            "• Treinamento da equipe"
+            "• <b>Abordagem:</b> Metodologia ágil (Scrum/Kanban) ou híbrida",
+            "• <b>Fases Obrigatórias:</b>",
+            "  - Levantamento e análise de requisitos",
+            "  - Design e arquitetura do sistema",
+            "  - Desenvolvimento iterativo",
+            "  - Testes integrados e validação",
+            "  - Implantação e go-live",
+            "  - Suporte e manutenção",
+            "• <b>Documentação:</b> Técnica completa e manuais de usuário",
+            "• <b>Treinamento:</b> Equipe técnica e usuários finais"
         ]
         for item in metodologia:
-            story.append(Paragraph(item, self.styles['CustomNormal']))
+            story.append(Paragraph(item, self.styles['TechnicalNormal']))
         
-        # Prazos e critérios
-        story.append(Paragraph("<b>Prazos e Critérios</b>", self.styles['CustomSubtitle']))
-        story.append(Paragraph("• <b>Prazo máximo:</b> 120 dias", self.styles['CustomNormal']))
-        story.append(Paragraph("• <b>Critérios de avaliação:</b> Técnica (70%) + Preço (30%)", self.styles['CustomNormal']))
+        # Critérios técnicos de avaliação
+        story.append(Paragraph("<b>Critérios de Avaliação Técnica</b>", self.styles['TechnicalSubtitle']))
+        story.append(Paragraph("• <b>Peso na Avaliação:</b> 70% da nota final", self.styles['TechnicalNormal']))
+        story.append(Paragraph("• <b>Metodologia:</b> 30% da nota técnica", self.styles['TechnicalNormal']))
+        story.append(Paragraph("• <b>Cronograma:</b> 25% da nota técnica", self.styles['TechnicalNormal']))
+        story.append(Paragraph("• <b>Equipe Técnica:</b> 20% da nota técnica", self.styles['TechnicalNormal']))
+        story.append(Paragraph("• <b>Arquitetura/Tecnologia:</b> 15% da nota técnica", self.styles['TechnicalNormal']))
+        story.append(Paragraph("• <b>Recursos e Ferramentas:</b> 10% da nota técnica", self.styles['TechnicalNormal']))
         
         story.append(self._create_separator_line())
     
-    def _add_technical_analysis(self, story: List, proposals: List[Dict]):
-        """Adiciona análise técnica detalhada"""
-        # Título da seção
-        section_title = Paragraph("🔧 BLOCO 2: EQUALIZAÇÃO DAS PROPOSTAS TÉCNICAS", self.styles['SectionHeader'])
+    def _add_technical_matrix(self, story: List, proposals: List[Dict]):
+        """Adiciona matriz de comparação técnica"""
+        section_title = Paragraph("📊 SEÇÃO 2: MATRIZ DE COMPARAÇÃO TÉCNICA", self.styles['TechnicalSectionHeader'])
         story.append(section_title)
         
-        # Matriz de comparação técnica
-        story.append(Paragraph("📊 Matriz de Comparação Técnica", self.styles['CustomSubtitle']))
-        
-        # Criar tabela de comparação
-        table_data = [['Empresa', 'Metodologia', 'Prazo', 'Equipe', 'Equipamentos', 'Materiais', 'Score Total']]
+        # Criar tabela de comparação técnica
+        table_data = [['Empresa', 'Metodologia', 'Prazo', 'Equipe', 'Tecnologias', 'Arquitetura', 'Score Técnico']]
         
         for proposal in proposals:
             metodologia_check = "✓" if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada' else "✗"
             prazo_check = "✓" if proposal['prazo_dias'] > 0 and proposal['prazo_dias'] <= 120 else "✗"
             equipe_check = "✓" if proposal['equipe_total'] >= 5 else "✗"
-            equipamentos_check = "✓" if proposal['equipamentos'] else "✗"
-            materiais_check = "✓" if proposal['materiais'] else "✗"
+            tech_check = "✓" if proposal['tecnologias'] else "✗"
+            arq_check = "✓" if proposal['arquitetura_sistema'] else "✗"
             
             table_data.append([
                 f"<b>{proposal['empresa']}</b>",
                 metodologia_check,
                 prazo_check,
                 equipe_check,
-                equipamentos_check,
-                materiais_check,
+                tech_check,
+                arq_check,
                 f"<b>{proposal['score_tecnico']:.1f}%</b>"
             ])
         
-        table = Table(table_data, colWidths=[3*cm, 2*cm, 1.5*cm, 1.5*cm, 2*cm, 2*cm, 2*cm])
+        table = Table(table_data, colWidths=[3.5*cm, 2*cm, 1.5*cm, 1.5*cm, 2*cm, 2*cm, 2*cm])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -914,7 +1123,7 @@ class ReportGenerator:
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
             ('FONTSIZE', (0, 1), (-1, -1), 9),
             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
@@ -923,113 +1132,421 @@ class ReportGenerator:
         story.append(table)
         story.append(Spacer(1, 20))
         
-        # Ranking técnico
-        story.append(Paragraph("🏆 Ranking Técnico Final", self.styles['CustomSubtitle']))
+        story.append(self._create_separator_line())
+    
+    def _add_technical_ranking(self, story: List, proposals: List[Dict]):
+        """Adiciona ranking técnico"""
+        section_title = Paragraph("🏆 SEÇÃO 3: RANKING E SCORES TÉCNICOS", self.styles['TechnicalSectionHeader'])
+        story.append(section_title)
+        
+        # Ranking técnico final
+        story.append(Paragraph("🥇 Ranking Técnico Final", self.styles['TechnicalSubtitle']))
         
         for i, proposal in enumerate(proposals, 1):
-            ranking_text = f"{i}. <b>🏢 {proposal['empresa']}</b> - {proposal['score_tecnico']:.1f}%"
-            story.append(Paragraph(ranking_text, self.styles['CustomNormal']))
+            if i == 1:
+                icon = "🥇"
+            elif i == 2:
+                icon = "🥈"
+            elif i == 3:
+                icon = "🥉"
+            else:
+                icon = f"{i}º"
+            
+            ranking_text = f"{icon} <b>{proposal['empresa']}</b> - {proposal['score_tecnico']:.1f}%"
+            story.append(Paragraph(ranking_text, self.styles['TechnicalNormal']))
         
         story.append(Spacer(1, 20))
         
-        # Análise detalhada por empresa
-        story.append(Paragraph("📋 Análise Detalhada por Empresa", self.styles['CustomSubtitle']))
+        # Análise de scores
+        story.append(Paragraph("📈 Análise de Scores Técnicos", self.styles['TechnicalSubtitle']))
         
-        for proposal in proposals:
-            self._add_company_technical_details(story, proposal)
+        if proposals:
+            best_score = proposals[0]['score_tecnico']
+            worst_score = min(p['score_tecnico'] for p in proposals)
+            avg_score = sum(p['score_tecnico'] for p in proposals) / len(proposals)
+            
+            story.append(Paragraph(f"• <b>Melhor Score:</b> {best_score:.1f}%", self.styles['TechnicalNormal']))
+            story.append(Paragraph(f"• <b>Pior Score:</b> {worst_score:.1f}%", self.styles['TechnicalNormal']))
+            story.append(Paragraph(f"• <b>Score Médio:</b> {avg_score:.1f}%", self.styles['TechnicalNormal']))
+            story.append(Paragraph(f"• <b>Diferença:</b> {best_score - worst_score:.1f} pontos", self.styles['TechnicalNormal']))
         
         story.append(self._create_separator_line())
     
-    def _add_company_technical_details(self, story: List, proposal: Dict):
-        """Adiciona detalhes técnicos de uma empresa"""
-        # Nome da empresa
-        company_title = f"🏢 {proposal['empresa']}"
-        story.append(Paragraph(company_title, self.styles['CustomSubtitle']))
+    def _add_detailed_technical_analysis(self, story: List, proposals: List[Dict]):
+        """Adiciona análise técnica detalhada por empresa"""
+        section_title = Paragraph("🔍 SEÇÃO 4: ANÁLISE TÉCNICA DETALHADA POR EMPRESA", self.styles['TechnicalSectionHeader'])
+        story.append(section_title)
         
-        # Metodologia
-        story.append(Paragraph("📋 Metodologia:", self.styles['CustomNormal']))
-        metodologia = proposal['metodologia'] if proposal['metodologia'] else "Não informada"
-        story.append(Paragraph(f"• <b>Descrição:</b> {metodologia}", self.styles['CustomNormal']))
+        for proposal in proposals:
+            self._add_company_detailed_technical_analysis(story, proposal)
         
-        aderencia = "✓ Boa" if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada' else "✗ Não informada"
-        story.append(Paragraph(f"• <b>Aderência ao TR:</b> {aderencia}", self.styles['CustomNormal']))
+        story.append(self._create_separator_line())
+    
+    def _add_company_detailed_technical_analysis(self, story: List, proposal: Dict):
+        """Adiciona análise técnica detalhada de uma empresa"""
+        # Nome da empresa com score
+        company_title = f"🏢 {proposal['empresa']} - Score: {proposal['score_tecnico']:.1f}%"
+        story.append(Paragraph(company_title, self.styles['TechnicalSubtitle']))
         
-        # Cronograma
-        story.append(Paragraph("⏰ Cronograma:", self.styles['CustomNormal']))
-        prazo = proposal['prazo_dias'] if proposal['prazo_dias'] > 0 else "Não informado"
-        story.append(Paragraph(f"• <b>Prazo Total:</b> {prazo} dias", self.styles['CustomNormal']))
+        # Metodologia detalhada
+        story.append(Paragraph("📋 Metodologia de Desenvolvimento:", self.styles['TechnicalNormal']))
+        metodologia = proposal['metodologia'] if proposal['metodologia'] else "Não especificada"
+        story.append(Paragraph(f"• <b>Abordagem:</b> {metodologia}", self.styles['TechnicalNormal']))
         
-        viabilidade = "✓ Dentro do prazo" if proposal['prazo_dias'] > 0 and proposal['prazo_dias'] <= 120 else "✗ Fora do prazo ou não informado"
-        story.append(Paragraph(f"• <b>Viabilidade:</b> {viabilidade}", self.styles['CustomNormal']))
+        if proposal['cronograma_fases']:
+            story.append(Paragraph("• <b>Fases do Cronograma:</b>", self.styles['TechnicalNormal']))
+            for fase in proposal['cronograma_fases']:
+                story.append(Paragraph(f"  - {fase}", self.styles['TechnicalNormal']))
+        
+        aderencia = "✓ Adequada" if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada' else "✗ Não especificada"
+        story.append(Paragraph(f"• <b>Aderência ao TR:</b> {aderencia}", self.styles['TechnicalNormal']))
+        
+        # Cronograma e prazo
+        story.append(Paragraph("⏰ Cronograma e Prazo:", self.styles['TechnicalNormal']))
+        prazo = f"{proposal['prazo_dias']} dias" if proposal['prazo_dias'] > 0 else "Não informado"
+        story.append(Paragraph(f"• <b>Prazo Total:</b> {prazo}", self.styles['TechnicalNormal']))
+        
+        if proposal['prazo_dias'] > 0:
+            if proposal['prazo_dias'] <= 90:
+                viabilidade = "✓ Excelente (≤ 90 dias)"
+            elif proposal['prazo_dias'] <= 120:
+                viabilidade = "✓ Dentro do prazo (≤ 120 dias)"
+            else:
+                viabilidade = "⚠️ Acima do prazo máximo"
+        else:
+            viabilidade = "✗ Não informado"
+        story.append(Paragraph(f"• <b>Viabilidade:</b> {viabilidade}", self.styles['TechnicalNormal']))
         
         # Equipe técnica
-        story.append(Paragraph("👥 Equipe Técnica:", self.styles['CustomNormal']))
-        equipe = proposal['equipe_total'] if proposal['equipe_total'] > 0 else "Não informada"
-        story.append(Paragraph(f"• <b>Total:</b> {equipe} pessoas", self.styles['CustomNormal']))
+        story.append(Paragraph("👥 Equipe Técnica:", self.styles['TechnicalNormal']))
+        equipe = f"{proposal['equipe_total']} pessoas" if proposal['equipe_total'] > 0 else "Não informada"
+        story.append(Paragraph(f"• <b>Total:</b> {equipe}", self.styles['TechnicalNormal']))
         
-        status_equipe = "✓ Adequada" if proposal['equipe_total'] >= 5 else "✗ Insuficiente ou não informada"
-        story.append(Paragraph(f"• <b>Status:</b> {status_equipe}", self.styles['CustomNormal']))
+        if proposal['equipe_detalhada']:
+            story.append(Paragraph("• <b>Composição da Equipe:</b>", self.styles['TechnicalNormal']))
+            for cargo, qtd in proposal['equipe_detalhada'].items():
+                story.append(Paragraph(f"  - {cargo.title()}: {qtd} pessoa(s)", self.styles['TechnicalNormal']))
+        
+        if proposal['equipe_total'] >= 8:
+            status_equipe = "✓ Equipe robusta"
+        elif proposal['equipe_total'] >= 5:
+            status_equipe = "✓ Equipe adequada"
+        elif proposal['equipe_total'] >= 3:
+            status_equipe = "⚠️ Equipe mínima"
+        else:
+            status_equipe = "✗ Equipe insuficiente ou não informada"
+        story.append(Paragraph(f"• <b>Avaliação:</b> {status_equipe}", self.styles['TechnicalNormal']))
+        
+        # Arquitetura e tecnologias
+        story.append(Paragraph("🏗️ Arquitetura e Tecnologias:", self.styles['TechnicalNormal']))
+        
+        if proposal['arquitetura_sistema']:
+            story.append(Paragraph(f"• <b>Arquitetura:</b> {proposal['arquitetura_sistema']}", self.styles['TechnicalNormal']))
+        else:
+            story.append(Paragraph("• <b>Arquitetura:</b> Não especificada", self.styles['TechnicalNormal']))
+        
+        if proposal['tecnologias']:
+            tech_list = ", ".join(proposal['tecnologias'])
+            story.append(Paragraph(f"• <b>Tecnologias:</b> {tech_list}", self.styles['TechnicalNormal']))
+        else:
+            story.append(Paragraph("• <b>Tecnologias:</b> Não especificadas", self.styles['TechnicalNormal']))
+        
+        if proposal['requisitos_tecnicos']:
+            req_list = ", ".join(proposal['requisitos_tecnicos'])
+            story.append(Paragraph(f"• <b>Requisitos Técnicos:</b> {req_list}", self.styles['TechnicalNormal']))
         
         # Recursos técnicos
-        story.append(Paragraph("🔧 Recursos Técnicos:", self.styles['CustomNormal']))
+        story.append(Paragraph("🔧 Recursos Técnicos:", self.styles['TechnicalNormal']))
         equipamentos_count = len(proposal['equipamentos'])
         materiais_count = len(proposal['materiais'])
-        story.append(Paragraph(f"• <b>Equipamentos:</b> {equipamentos_count} itens listados", self.styles['CustomNormal']))
-        story.append(Paragraph(f"• <b>Materiais:</b> {materiais_count} itens listados", self.styles['CustomNormal']))
+        story.append(Paragraph(f"• <b>Equipamentos:</b> {equipamentos_count} itens listados", self.styles['TechnicalNormal']))
+        story.append(Paragraph(f"• <b>Materiais/Software:</b> {materiais_count} itens listados", self.styles['TechnicalNormal']))
         
-        # Pontos fortes
+        # Pontos fortes técnicos
         pontos_fortes = []
         if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada':
-            pontos_fortes.append("Metodologia bem definida")
+            if any(term in proposal['metodologia'].lower() for term in ['scrum', 'kanban', 'ágil', 'agile']):
+                pontos_fortes.append("Metodologia ágil moderna")
+            else:
+                pontos_fortes.append("Metodologia bem definida")
+        
         if proposal['prazo_dias'] > 0 and proposal['prazo_dias'] <= 90:
             pontos_fortes.append("Prazo otimizado")
+        
         if proposal['equipe_total'] >= 8:
-            pontos_fortes.append("Equipe robusta")
-        if proposal['tecnologias']:
-            pontos_fortes.append("Tecnologias modernas")
+            pontos_fortes.append("Equipe técnica robusta")
+        
+        if len(proposal['tecnologias']) >= 3:
+            pontos_fortes.append("Stack tecnológico diversificado")
+        
+        if proposal['arquitetura_sistema']:
+            pontos_fortes.append("Arquitetura bem especificada")
         
         if pontos_fortes:
-            story.append(Paragraph("✅ Pontos Fortes:", self.styles['CustomNormal']))
+            story.append(Paragraph("✅ Pontos Fortes Técnicos:", self.styles['TechnicalNormal']))
             for ponto in pontos_fortes:
-                story.append(Paragraph(f"• {ponto}", self.styles['CustomNormal']))
+                story.append(Paragraph(f"• {ponto}", self.styles['TechnicalNormal']))
         
-        # Gaps e riscos
+        # Gaps e riscos técnicos
         gaps = []
         if not proposal['metodologia'] or proposal['metodologia'] == 'Metodologia não especificada':
             gaps.append("Metodologia não especificada")
+        
         if proposal['prazo_dias'] == 0:
-            gaps.append("Prazo não informado")
-        if proposal['equipe_total'] == 0:
-            gaps.append("Equipe não detalhada")
-        if not proposal['equipamentos']:
-            gaps.append("Equipamentos não listados")
+            gaps.append("Cronograma não detalhado")
+        elif proposal['prazo_dias'] > 120:
+            gaps.append("Prazo acima do limite")
+        
+        if proposal['equipe_total'] < 5:
+            gaps.append("Equipe técnica insuficiente")
+        
+        if not proposal['tecnologias']:
+            gaps.append("Stack tecnológico não especificado")
+        
+        if not proposal['arquitetura_sistema']:
+            gaps.append("Arquitetura do sistema não detalhada")
         
         if gaps:
-            story.append(Paragraph("⚠️ Gaps e Riscos:", self.styles['CustomNormal']))
+            story.append(Paragraph("⚠️ Gaps e Riscos Técnicos:", self.styles['TechnicalNormal']))
             for gap in gaps:
-                story.append(Paragraph(f"• {gap}", self.styles['CustomNormal']))
+                story.append(Paragraph(f"• {gap}", self.styles['TechnicalNormal']))
         
         story.append(Spacer(1, 15))
     
-    def _add_commercial_analysis(self, story: List, proposals: List[Dict]):
-        """Adiciona análise comercial"""
-        # Título da seção
-        section_title = Paragraph("💰 BLOCO 3: EQUALIZAÇÃO DAS PROPOSTAS COMERCIAIS", self.styles['SectionHeader'])
+    def _add_technical_recommendations(self, story: List, analysis_result: Dict):
+        """Adiciona recomendações técnicas"""
+        section_title = Paragraph("💡 SEÇÃO 5: RECOMENDAÇÕES TÉCNICAS", self.styles['TechnicalSectionHeader'])
+        story.append(section_title)
+        
+        proposals = analysis_result['proposals']
+        
+        if proposals:
+            best_technical = proposals[0]  # Já ordenado por score técnico
+            
+            # Recomendação principal
+            story.append(Paragraph("🏆 Recomendação Técnica Principal", self.styles['TechnicalSubtitle']))
+            story.append(Paragraph(f"Com base na análise técnica detalhada, recomenda-se a empresa <b>{best_technical['empresa']}</b> que obteve o melhor score técnico ({best_technical['score_tecnico']:.1f}%).", self.styles['TechnicalNormal']))
+            
+            # Justificativa técnica
+            story.append(Paragraph("📋 Justificativa Técnica:", self.styles['TechnicalSubtitle']))
+            justificativas = []
+            
+            if best_technical['metodologia'] and best_technical['metodologia'] != 'Metodologia não especificada':
+                justificativas.append(f"Metodologia bem definida: {best_technical['metodologia']}")
+            
+            if best_technical['prazo_dias'] > 0:
+                justificativas.append(f"Cronograma viável: {best_technical['prazo_dias']} dias")
+            
+            if best_technical['equipe_total'] > 0:
+                justificativas.append(f"Equipe adequada: {best_technical['equipe_total']} profissionais")
+            
+            if best_technical['tecnologias']:
+                justificativas.append(f"Stack tecnológico: {', '.join(best_technical['tecnologias'][:3])}")
+            
+            for justificativa in justificativas:
+                story.append(Paragraph(f"• {justificativa}", self.styles['TechnicalNormal']))
+        
+        # Ações técnicas recomendadas
+        story.append(Paragraph("🔧 Ações Técnicas Recomendadas", self.styles['TechnicalSubtitle']))
+        actions = [
+            "• Solicitar detalhamento da arquitetura do sistema às empresas finalistas",
+            "• Validar experiência da equipe técnica proposta em projetos similares",
+            "• Confirmar disponibilidade dos profissionais para o período do projeto",
+            "• Solicitar cronograma detalhado com marcos e entregas",
+            "• Avaliar infraestrutura tecnológica necessária",
+            "• Definir critérios de aceite para cada fase do desenvolvimento",
+            "• Estabelecer métricas de qualidade e performance",
+            "• Planejar estratégia de testes e homologação"
+        ]
+        
+        for action in actions:
+            story.append(Paragraph(action, self.styles['TechnicalNormal']))
+        
+        # Próximos passos técnicos
+        story.append(Paragraph("🚀 Próximos Passos Técnicos", self.styles['TechnicalSubtitle']))
+        next_steps = [
+            "• Reunião técnica com as empresas finalistas",
+            "• Apresentação da arquitetura proposta",
+            "• Demonstração de cases similares",
+            "• Validação de referências técnicas",
+            "• Definição de ambiente de desenvolvimento",
+            "• Elaboração do plano de projeto detalhado"
+        ]
+        
+        for step in next_steps:
+            story.append(Paragraph(step, self.styles['TechnicalNormal']))
+    
+    def _create_separator_line(self):
+        """Cria linha separadora"""
+        return Table([['---']], colWidths=[15*cm], style=TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTSIZE', (0, 0), (-1, -1), 14),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.grey)
+        ]))
+
+class CommercialReportGenerator:
+    """Gerador de relatório comercial especializado"""
+    
+    def __init__(self):
+        self.styles = getSampleStyleSheet()
+        self._setup_custom_styles()
+    
+    def _setup_custom_styles(self):
+        """Configura estilos personalizados para o relatório comercial"""
+        # Título principal
+        self.styles.add(ParagraphStyle(
+            name='CommercialTitle',
+            parent=self.styles['Title'],
+            fontSize=24,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+            textColor=colors.darkgreen,
+            fontName='Helvetica-Bold'
+        ))
+        
+        # Subtítulo comercial
+        self.styles.add(ParagraphStyle(
+            name='CommercialSubtitle',
+            parent=self.styles['Heading1'],
+            fontSize=16,
+            spaceAfter=20,
+            spaceBefore=20,
+            textColor=colors.darkgreen,
+            fontName='Helvetica-Bold'
+        ))
+        
+        # Cabeçalho de seção comercial
+        self.styles.add(ParagraphStyle(
+            name='CommercialSectionHeader',
+            parent=self.styles['Heading2'],
+            fontSize=14,
+            spaceAfter=15,
+            spaceBefore=15,
+            textColor=colors.darkred,
+            fontName='Helvetica-Bold',
+            borderWidth=1,
+            borderColor=colors.darkred,
+            borderPadding=5
+        ))
+        
+        # Texto normal comercial
+        self.styles.add(ParagraphStyle(
+            name='CommercialNormal',
+            parent=self.styles['Normal'],
+            fontSize=11,
+            spaceAfter=10,
+            fontName='Helvetica'
+        ))
+    
+    def generate_commercial_report(self, analysis_result: Dict[str, Any], output_path: str):
+        """Gera relatório comercial especializado"""
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            rightMargin=2*cm,
+            leftMargin=2*cm,
+            topMargin=2*cm,
+            bottomMargin=2*cm
+        )
+        
+        story = []
+        
+        # Cabeçalho do relatório comercial
+        self._add_commercial_header(story, analysis_result)
+        
+        # Seção 1: Resumo Comercial do TR
+        self._add_commercial_tr_summary(story)
+        
+        # Seção 2: Ranking de Preços
+        self._add_price_ranking(story, analysis_result['proposals'])
+        
+        # Seção 3: Análise de Custos e BDI
+        self._add_cost_analysis(story, analysis_result['proposals'])
+        
+        # Seção 4: Condições Comerciais
+        self._add_commercial_conditions(story, analysis_result['proposals'])
+        
+        # Seção 5: Recomendações Comerciais
+        self._add_commercial_recommendations(story, analysis_result)
+        
+        doc.build(story)
+        logger.info(f"Relatório comercial gerado: {output_path}")
+    
+    def _add_commercial_header(self, story: List, analysis_result: Dict):
+        """Adiciona cabeçalho do relatório comercial"""
+        # Título principal
+        title = Paragraph("ANÁLISE E EQUALIZAÇÃO COMERCIAL DE PROPOSTAS", self.styles['CommercialTitle'])
+        story.append(title)
+        
+        # Subtítulo
+        subtitle = Paragraph("Avaliação Comercial e Financeira", self.styles['CommercialSubtitle'])
+        story.append(subtitle)
+        
+        # Data de geração
+        date_text = f"<b>Data de Geração:</b> {analysis_result['analysis_date']}"
+        date_para = Paragraph(date_text, self.styles['CommercialNormal'])
+        story.append(date_para)
+        
+        # Linha separadora
+        story.append(Spacer(1, 20))
+        story.append(self._create_separator_line())
+        story.append(Spacer(1, 20))
+    
+    def _add_commercial_tr_summary(self, story: List):
+        """Adiciona resumo comercial do TR"""
+        section_title = Paragraph("💰 SEÇÃO 1: RESUMO COMERCIAL DO TERMO DE REFERÊNCIA", self.styles['CommercialSectionHeader'])
+        story.append(section_title)
+        
+        # Objeto comercial
+        story.append(Paragraph("<b>Objeto da Contratação</b>", self.styles['CommercialSubtitle']))
+        story.append(Paragraph("Desenvolvimento e implantação de Sistema de Gestão Empresarial", self.styles['CommercialNormal']))
+        
+        # Critérios comerciais
+        story.append(Paragraph("<b>Critérios de Avaliação Comercial</b>", self.styles['CommercialSubtitle']))
+        criterios = [
+            "• <b>Peso na Avaliação:</b> 30% da nota final",
+            "• <b>Menor Preço:</b> 50% da nota comercial",
+            "• <b>BDI Adequado:</b> 20% da nota comercial",
+            "• <b>Condições de Pagamento:</b> 15% da nota comercial",
+            "• <b>Garantias Oferecidas:</b> 15% da nota comercial"
+        ]
+        for criterio in criterios:
+            story.append(Paragraph(criterio, self.styles['CommercialNormal']))
+        
+        # Condições comerciais exigidas
+        story.append(Paragraph("<b>Condições Comerciais Obrigatórias</b>", self.styles['CommercialSubtitle']))
+        condicoes = [
+            "• <b>Forma de Pagamento:</b> Conforme cronograma de entregas",
+            "• <b>Garantia Mínima:</b> 12 meses para o sistema",
+            "• <b>BDI Máximo:</b> 45% sobre custos diretos",
+            "• <b>Reajuste:</b> Anual pelo IPCA",
+            "• <b>Multas:</b> Por atraso na entrega",
+            "• <b>Vigência:</b> 12 meses + renovações"
+        ]
+        for condicao in condicoes:
+            story.append(Paragraph(condicao, self.styles['CommercialNormal']))
+        
+        story.append(self._create_separator_line())
+    
+    def _add_price_ranking(self, story: List, proposals: List[Dict]):
+        """Adiciona ranking de preços"""
+        section_title = Paragraph("📊 SEÇÃO 2: RANKING DE PREÇOS", self.styles['CommercialSectionHeader'])
         story.append(section_title)
         
         # Filtrar propostas com preço
         proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
-        proposals_with_price.sort(key=lambda x: x['preco_total'])
         
         if not proposals_with_price:
-            story.append(Paragraph("⚠️ Nenhuma proposta com informações comerciais válidas foi encontrada.", self.styles['CustomNormal']))
+            story.append(Paragraph("⚠️ Nenhuma proposta com informações comerciais válidas foi encontrada.", self.styles['CommercialNormal']))
             return
         
-        # Ranking de preços
-        story.append(Paragraph("💵 Ranking de Preços", self.styles['CustomSubtitle']))
+        # Ordenar por preço
+        proposals_with_price.sort(key=lambda x: x['preco_total'])
         
         # Tabela de ranking
-        table_data = [['Posição', 'Empresa', 'Preço Total', 'Diferença', 'Status']]
+        story.append(Paragraph("💵 Ranking por Menor Preço", self.styles['CommercialSubtitle']))
+        
+        table_data = [['Posição', 'Empresa', 'Preço Total', 'Diferença', 'Status', 'Score Comercial']]
         
         base_price = proposals_with_price[0]['preco_total']
         
@@ -1041,150 +1558,234 @@ class ReportGenerator:
                 diferenca_valor = proposal['preco_total'] - base_price
                 diferenca_perc = ((proposal['preco_total'] / base_price) - 1) * 100
                 diferenca = f"+R$ {diferenca_valor:,.2f}"
-                status = f"📈 {diferenca_perc:.0f}% mais caro"
+                status = f"📈 {diferenca_perc:.1f}% mais caro"
             
             table_data.append([
                 f"<b>{i}º</b>",
                 proposal['empresa'],
                 f"<b>R$ {proposal['preco_total']:,.2f}</b>",
                 diferenca,
-                status
+                status,
+                f"{proposal['score_comercial']:.1f}%"
             ])
         
-        table = Table(table_data, colWidths=[2*cm, 4*cm, 3*cm, 3*cm, 3*cm])
+        table = Table(table_data, colWidths=[1.5*cm, 3*cm, 2.5*cm, 2.5*cm, 3*cm, 2*cm])
         table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
             ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
         ]))
         
         story.append(table)
         story.append(Spacer(1, 20))
         
-        # Análise comercial detalhada
-        story.append(Paragraph("📊 Análise Comercial Detalhada", self.styles['CustomSubtitle']))
-        
-        for proposal in proposals_with_price:
-            self._add_company_commercial_details(story, proposal)
+        # Análise de dispersão de preços
+        if len(proposals_with_price) > 1:
+            story.append(Paragraph("📈 Análise de Dispersão de Preços", self.styles['CommercialSubtitle']))
+            
+            min_price = min(p['preco_total'] for p in proposals_with_price)
+            max_price = max(p['preco_total'] for p in proposals_with_price)
+            avg_price = sum(p['preco_total'] for p in proposals_with_price) / len(proposals_with_price)
+            
+            story.append(Paragraph(f"• <b>Menor Preço:</b> R$ {min_price:,.2f}", self.styles['CommercialNormal']))
+            story.append(Paragraph(f"• <b>Maior Preço:</b> R$ {max_price:,.2f}", self.styles['CommercialNormal']))
+            story.append(Paragraph(f"• <b>Preço Médio:</b> R$ {avg_price:,.2f}", self.styles['CommercialNormal']))
+            story.append(Paragraph(f"• <b>Variação:</b> {((max_price/min_price - 1) * 100):.1f}%", self.styles['CommercialNormal']))
         
         story.append(self._create_separator_line())
     
-    def _add_company_commercial_details(self, story: List, proposal: Dict):
-        """Adiciona detalhes comerciais de uma empresa"""
-        # Nome da empresa
-        company_title = f"🏢 {proposal['empresa']}"
-        story.append(Paragraph(company_title, self.styles['CustomSubtitle']))
+    def _add_cost_analysis(self, story: List, proposals: List[Dict]):
+        """Adiciona análise de custos e BDI"""
+        section_title = Paragraph("💼 SEÇÃO 3: ANÁLISE DE CUSTOS E BDI", self.styles['CommercialSectionHeader'])
+        story.append(section_title)
         
-        # Informações comerciais
-        story.append(Paragraph("💼 Informações Comerciais:", self.styles['CustomNormal']))
+        proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+        
+        if not proposals_with_price:
+            story.append(Paragraph("⚠️ Nenhuma proposta com informações comerciais para análise.", self.styles['CommercialNormal']))
+            return
+        
+        for proposal in proposals_with_price:
+            self._add_company_cost_analysis(story, proposal)
+        
+        story.append(self._create_separator_line())
+    
+    def _add_company_cost_analysis(self, story: List, proposal: Dict):
+        """Adiciona análise de custos de uma empresa"""
+        # Nome da empresa
+        company_title = f"🏢 {proposal['empresa']} - Score Comercial: {proposal['score_comercial']:.1f}%"
+        story.append(Paragraph(company_title, self.styles['CommercialSubtitle']))
+        
+        # Informações comerciais básicas
+        story.append(Paragraph("💼 Informações Comerciais:", self.styles['CommercialNormal']))
         
         cnpj = proposal['cnpj'] if proposal['cnpj'] else "Não informado"
-        story.append(Paragraph(f"• <b>CNPJ:</b> {cnpj}", self.styles['CustomNormal']))
-        story.append(Paragraph(f"• <b>Preço Total:</b> R$ {proposal['preco_total']:,.2f}", self.styles['CustomNormal']))
+        story.append(Paragraph(f"• <b>CNPJ:</b> {cnpj}", self.styles['CommercialNormal']))
+        story.append(Paragraph(f"• <b>Preço Total:</b> R$ {proposal['preco_total']:,.2f}", self.styles['CommercialNormal']))
         
         if proposal['bdi_percentual'] > 0:
-            story.append(Paragraph(f"• <b>BDI:</b> {proposal['bdi_percentual']:.2f}%", self.styles['CustomNormal']))
+            story.append(Paragraph(f"• <b>BDI:</b> {proposal['bdi_percentual']:.2f}%", self.styles['CommercialNormal']))
+            
+            # Análise do BDI
+            if proposal['bdi_percentual'] <= 25:
+                bdi_status = "✓ Excelente (≤ 25%)"
+            elif proposal['bdi_percentual'] <= 35:
+                bdi_status = "✓ Bom (≤ 35%)"
+            elif proposal['bdi_percentual'] <= 45:
+                bdi_status = "⚠️ Aceitável (≤ 45%)"
+            else:
+                bdi_status = "❌ Alto (> 45%)"
+            story.append(Paragraph(f"• <b>Avaliação do BDI:</b> {bdi_status}", self.styles['CommercialNormal']))
+        else:
+            story.append(Paragraph("• <b>BDI:</b> Não informado", self.styles['CommercialNormal']))
         
         # Composição de custos
         if any(proposal['composicao_custos'].values()):
-            story.append(Paragraph("💰 Composição de Custos:", self.styles['CustomNormal']))
-            story.append(Paragraph(f"• <b>Mão de Obra:</b> R$ {proposal['composicao_custos']['mao_obra']:,.2f}", self.styles['CustomNormal']))
-            story.append(Paragraph(f"• <b>Materiais:</b> R$ {proposal['composicao_custos']['materiais']:,.2f}", self.styles['CustomNormal']))
-            story.append(Paragraph(f"• <b>Equipamentos:</b> R$ {proposal['composicao_custos']['equipamentos']:,.2f}", self.styles['CustomNormal']))
+            story.append(Paragraph("💰 Composição de Custos:", self.styles['CommercialNormal']))
+            
+            total_custos = sum(proposal['composicao_custos'].values())
+            
+            for categoria, valor in proposal['composicao_custos'].items():
+                if valor > 0:
+                    percentual = (valor / total_custos) * 100 if total_custos > 0 else 0
+                    categoria_nome = categoria.replace('_', ' ').title()
+                    story.append(Paragraph(f"• <b>{categoria_nome}:</b> R$ {valor:,.2f} ({percentual:.1f}%)", self.styles['CommercialNormal']))
+            
+            story.append(Paragraph(f"• <b>Total de Custos Diretos:</b> R$ {total_custos:,.2f}", self.styles['CommercialNormal']))
+            
+            # Calcular BDI implícito se não informado
+            if proposal['bdi_percentual'] == 0 and total_custos > 0:
+                bdi_implicito = ((proposal['preco_total'] / total_custos) - 1) * 100
+                story.append(Paragraph(f"• <b>BDI Implícito:</b> {bdi_implicito:.2f}%", self.styles['CommercialNormal']))
+        
+        # Condições comerciais
+        if proposal['condicoes_pagamento']:
+            story.append(Paragraph(f"• <b>Condições de Pagamento:</b> {proposal['condicoes_pagamento']}", self.styles['CommercialNormal']))
+        
+        if proposal['garantia']:
+            story.append(Paragraph(f"• <b>Garantia:</b> {proposal['garantia']}", self.styles['CommercialNormal']))
         
         story.append(Spacer(1, 15))
     
-    def _add_conclusion(self, story: List, analysis_result: Dict):
-        """Adiciona conclusão e recomendações"""
-        # Título da seção
-        section_title = Paragraph("🎯 BLOCO 4: CONCLUSÃO E RECOMENDAÇÕES", self.styles['SectionHeader'])
+    def _add_commercial_conditions(self, story: List, proposals: List[Dict]):
+        """Adiciona análise de condições comerciais"""
+        section_title = Paragraph("📋 SEÇÃO 4: CONDIÇÕES COMERCIAIS", self.styles['CommercialSectionHeader'])
         story.append(section_title)
         
-        proposals = analysis_result['proposals']
-        summary = analysis_result['summary']
+        # Tabela comparativa de condições
+        story.append(Paragraph("📊 Comparativo de Condições Comerciais", self.styles['CommercialSubtitle']))
         
-        # Síntese técnica e comercial
-        story.append(Paragraph("📋 Síntese Técnica e Comercial", self.styles['CustomSubtitle']))
+        proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
         
-        if proposals:
-            best_technical = proposals[0]  # Já ordenado por score técnico
-            proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+        if proposals_with_price:
+            table_data = [['Empresa', 'Preço Total', 'BDI (%)', 'Pagamento', 'Garantia']]
             
-            if proposals_with_price:
-                best_price = min(proposals_with_price, key=lambda x: x['preco_total'])
+            for proposal in proposals_with_price:
+                pagamento = proposal['condicoes_pagamento'] if proposal['condicoes_pagamento'] else "Não informado"
+                garantia = proposal['garantia'] if proposal['garantia'] else "Não informado"
+                bdi = f"{proposal['bdi_percentual']:.1f}%" if proposal['bdi_percentual'] > 0 else "N/I"
                 
-                story.append(Paragraph(f"• <b>Melhor Proposta Técnica:</b> {best_technical['empresa']} ({best_technical['score_tecnico']:.1f}%)", self.styles['CustomNormal']))
-                story.append(Paragraph(f"• <b>Melhor Proposta Comercial:</b> {best_price['empresa']} (R$ {best_price['preco_total']:,.2f})", self.styles['CustomNormal']))
-                
-                # Recomendação principal
-                story.append(Paragraph("🏆 Recomendação Principal", self.styles['CustomSubtitle']))
-                
-                if best_technical['empresa'] == best_price['empresa']:
-                    story.append(Paragraph(f"A empresa <b>{best_technical['empresa']}</b> apresenta a melhor proposta tanto técnica quanto comercial, sendo a recomendação unânime para contratação.", self.styles['CustomNormal']))
-                else:
-                    # Análise custo-benefício
-                    if best_technical['preco_total'] > 0:
-                        price_diff = ((best_technical['preco_total'] / best_price['preco_total']) - 1) * 100
-                        score_diff = best_technical['score_tecnico'] - best_price.get('score_tecnico', 0)
-                        
-                        if price_diff <= 20 and score_diff >= 10:
-                            story.append(Paragraph(f"Recomenda-se a contratação da <b>{best_technical['empresa']}</b>, pois oferece qualidade técnica superior ({score_diff:.1f} pontos a mais) com diferença de preço aceitável ({price_diff:.1f}%).", self.styles['CustomNormal']))
-                        else:
-                            story.append(Paragraph(f"Recomenda-se análise detalhada entre <b>{best_technical['empresa']}</b> (melhor técnica) e <b>{best_price['empresa']}</b> (melhor preço) considerando os critérios de avaliação 70% técnica + 30% preço.", self.styles['CustomNormal']))
-                    else:
-                        story.append(Paragraph(f"Recomenda-se a <b>{best_price['empresa']}</b> pela melhor proposta comercial, mas sugere-se negociação para melhorias técnicas.", self.styles['CustomNormal']))
-        
-        # Ações específicas
-        story.append(Paragraph("📝 Ações Específicas Recomendadas", self.styles['CustomSubtitle']))
-        actions = [
-            "• Solicitar esclarecimentos sobre metodologia às empresas que não especificaram",
-            "• Validar disponibilidade da equipe técnica proposta",
-            "• Negociar prazos mais agressivos quando possível",
-            "• Confirmar garantias e condições de pagamento",
-            "• Realizar reunião técnica com as empresas finalistas"
-        ]
-        
-        for action in actions:
-            story.append(Paragraph(action, self.styles['CustomNormal']))
-        
-        # Resumo executivo final
-        if summary:
-            story.append(Paragraph("📊 Resumo Executivo", self.styles['CustomSubtitle']))
+                table_data.append([
+                    proposal['empresa'],
+                    f"R$ {proposal['preco_total']:,.2f}",
+                    bdi,
+                    pagamento[:30] + "..." if len(pagamento) > 30 else pagamento,
+                    garantia[:20] + "..." if len(garantia) > 20 else garantia
+                ])
             
-            # Tabela resumo
-            table_data = [['Métrica', 'Valor']]
-            table_data.append(['Total de Propostas Analisadas', str(summary.get('total_proposals', 0))])
-            
-            if summary.get('price_range', {}).get('min', 0) > 0:
-                table_data.append(['Menor Preço', f"R$ {summary['price_range']['min']:,.2f}"])
-                table_data.append(['Maior Preço', f"R$ {summary['price_range']['max']:,.2f}"])
-                table_data.append(['Preço Médio', f"R$ {summary['price_range']['avg']:,.2f}"])
-            
-            if summary.get('deadline_range', {}).get('min', 0) > 0:
-                table_data.append(['Menor Prazo', f"{summary['deadline_range']['min']} dias"])
-                table_data.append(['Maior Prazo', f"{summary['deadline_range']['max']} dias"])
-            
-            table = Table(table_data, colWidths=[8*cm, 4*cm])
+            table = Table(table_data, colWidths=[3*cm, 2.5*cm, 1.5*cm, 4*cm, 3*cm])
             table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.navy),
+                ('BACKGROUND', (0, 0), (-1, 0), colors.darkred),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('FONTSIZE', (0, 0), (-1, 0), 9),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.mistyrose),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('FONTSIZE', (0, 1), (-1, -1), 9)
+                ('FONTSIZE', (0, 1), (-1, -1), 8),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
             ]))
             
             story.append(table)
+        
+        story.append(self._create_separator_line())
+    
+    def _add_commercial_recommendations(self, story: List, analysis_result: Dict):
+        """Adiciona recomendações comerciais"""
+        section_title = Paragraph("💡 SEÇÃO 5: RECOMENDAÇÕES COMERCIAIS", self.styles['CommercialSectionHeader'])
+        story.append(section_title)
+        
+        proposals = analysis_result['proposals']
+        proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+        
+        if proposals_with_price:
+            # Ordenar por score comercial
+            proposals_with_price.sort(key=lambda x: x['score_comercial'], reverse=True)
+            best_commercial = proposals_with_price[0]
+            
+            # Recomendação principal
+            story.append(Paragraph("🏆 Recomendação Comercial Principal", self.styles['CommercialSubtitle']))
+            story.append(Paragraph(f"Com base na análise comercial, recomenda-se a empresa <b>{best_commercial['empresa']}</b> que obteve o melhor score comercial ({best_commercial['score_comercial']:.1f}%) com preço de R$ {best_commercial['preco_total']:,.2f}.", self.styles['CommercialNormal']))
+            
+            # Justificativa comercial
+            story.append(Paragraph("📋 Justificativa Comercial:", self.styles['CommercialSubtitle']))
+            
+            # Encontrar posição no ranking de preços
+            proposals_by_price = sorted(proposals_with_price, key=lambda x: x['preco_total'])
+            price_position = proposals_by_price.index(best_commercial) + 1
+            
+            story.append(Paragraph(f"• <b>Posição no ranking de preços:</b> {price_position}º lugar", self.styles['CommercialNormal']))
+            story.append(Paragraph(f"• <b>Preço proposto:</b> R$ {best_commercial['preco_total']:,.2f}", self.styles['CommercialNormal']))
+            
+            if best_commercial['bdi_percentual'] > 0:
+                story.append(Paragraph(f"• <b>BDI oferecido:</b> {best_commercial['bdi_percentual']:.2f}%", self.styles['CommercialNormal']))
+            
+            # Análise custo-benefício
+            if price_position == 1:
+                story.append(Paragraph("• <b>Vantagem:</b> Melhor preço do certame", self.styles['CommercialNormal']))
+            else:
+                cheapest = proposals_by_price[0]
+                difference = best_commercial['preco_total'] - cheapest['preco_total']
+                percentage = (difference / cheapest['preco_total']) * 100
+                story.append(Paragraph(f"• <b>Diferença para o menor preço:</b> R$ {difference:,.2f} ({percentage:.1f}%)", self.styles['CommercialNormal']))
+        
+        # Ações comerciais recomendadas
+        story.append(Paragraph("💼 Ações Comerciais Recomendadas", self.styles['CommercialSubtitle']))
+        actions = [
+            "• Negociar melhores condições de pagamento com as empresas finalistas",
+            "• Solicitar detalhamento da composição de custos",
+            "• Verificar referências comerciais das empresas",
+            "• Confirmar capacidade financeira para execução do projeto",
+            "• Negociar extensão do período de garantia",
+            "• Definir critérios de reajuste de preços",
+            "• Estabelecer multas por atraso na entrega",
+            "• Avaliar propostas de desconto para pagamento antecipado"
+        ]
+        
+        for action in actions:
+            story.append(Paragraph(action, self.styles['CommercialNormal']))
+        
+        # Próximos passos comerciais
+        story.append(Paragraph("🚀 Próximos Passos Comerciais", self.styles['CommercialSubtitle']))
+        next_steps = [
+            "• Reunião comercial com as empresas finalistas",
+            "• Negociação de condições específicas",
+            "• Verificação de documentação fiscal",
+            "• Análise de capacidade de execução financeira",
+            "• Definição de cronograma de pagamentos",
+            "• Elaboração de minuta contratual"
+        ]
+        
+        for step in next_steps:
+            story.append(Paragraph(step, self.styles['CommercialNormal']))
     
     def _create_separator_line(self):
         """Cria linha separadora"""
@@ -1194,9 +1795,10 @@ class ReportGenerator:
             ('TEXTCOLOR', (0, 0), (-1, -1), colors.grey)
         ]))
 
-# Instanciar analisador e gerador
+# Instanciar analisador e geradores
 analyzer = ProposalAnalyzer()
-report_generator = ReportGenerator()
+technical_report_generator = TechnicalReportGenerator()
+commercial_report_generator = CommercialReportGenerator()
 
 def allowed_file(filename):
     """Verifica se o arquivo tem extensão permitida"""
@@ -1215,6 +1817,7 @@ def upload_files():
             return jsonify({'error': 'Nenhum arquivo enviado'}), 400
         
         files = request.files.getlist('files')
+        report_type = request.form.get('report_type', 'both')  # 'technical', 'commercial', 'both'
         
         if not files or all(file.filename == '' for file in files):
             return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
@@ -1244,12 +1847,31 @@ def upload_files():
         logger.info(f"Processando {len(uploaded_files)} arquivos")
         analysis_result = analyzer.analyze_proposals(uploaded_files)
         
-        # Gerar relatório
+        # Gerar relatórios conforme solicitado
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        report_filename = f'analise_comparativa_{timestamp}.pdf'
-        report_path = os.path.join(app.config['UPLOAD_FOLDER'], report_filename)
+        report_urls = []
         
-        report_generator.generate_report(analysis_result, report_path)
+        if report_type in ['technical', 'both']:
+            technical_filename = f'analise_tecnica_{timestamp}.pdf'
+            technical_path = os.path.join(app.config['UPLOAD_FOLDER'], technical_filename)
+            technical_report_generator.generate_technical_report(analysis_result, technical_path)
+            report_urls.append({
+                'type': 'technical',
+                'filename': technical_filename,
+                'url': f'/download/{technical_filename}',
+                'title': 'Relatório de Análise Técnica'
+            })
+        
+        if report_type in ['commercial', 'both']:
+            commercial_filename = f'analise_comercial_{timestamp}.pdf'
+            commercial_path = os.path.join(app.config['UPLOAD_FOLDER'], commercial_filename)
+            commercial_report_generator.generate_commercial_report(analysis_result, commercial_path)
+            report_urls.append({
+                'type': 'commercial',
+                'filename': commercial_filename,
+                'url': f'/download/{commercial_filename}',
+                'title': 'Relatório de Análise Comercial'
+            })
         
         # Limpar arquivos temporários
         for file_info in uploaded_files:
@@ -1261,7 +1883,7 @@ def upload_files():
         return jsonify({
             'success': True,
             'message': 'Análise concluída com sucesso!',
-            'report_url': f'/download/{report_filename}',
+            'reports': report_urls,
             'summary': analysis_result['summary']
         })
         
@@ -1282,14 +1904,16 @@ def download_file(filename):
         logger.error(f"Erro no download: {str(e)}")
         return jsonify({'error': 'Erro no download'}), 500
 
-# Template HTML (mesmo da versão anterior)
+
+
+# Template HTML atualizado para escolher tipo de relatório
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Analisador de Propostas - Azure AI</title>
+    <title>Arias Analyzer Pro - Análise de Propostas</title>
     <style>
         * {
             margin: 0;
@@ -1301,136 +1925,144 @@ HTML_TEMPLATE = '''
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             padding: 20px;
         }
         
         .container {
-            max-width: 800px;
-            margin: 0 auto;
             background: white;
             border-radius: 20px;
             box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        
-        .header {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-            color: white;
             padding: 40px;
+            max-width: 600px;
+            width: 100%;
             text-align: center;
         }
         
-        .header h1 {
+        .logo {
             font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
             margin-bottom: 10px;
-            font-weight: 300;
         }
         
-        .header p {
-            font-size: 1.2em;
-            opacity: 0.9;
-        }
-        
-        .content {
-            padding: 40px;
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
         }
         
         .upload-area {
-            border: 3px dashed #4facfe;
+            border: 3px dashed #667eea;
             border-radius: 15px;
-            padding: 60px 20px;
-            text-align: center;
+            padding: 40px 20px;
+            margin: 30px 0;
             background: #f8f9ff;
             transition: all 0.3s ease;
             cursor: pointer;
         }
         
         .upload-area:hover {
-            border-color: #00f2fe;
-            background: #f0f8ff;
+            border-color: #764ba2;
+            background: #f0f2ff;
         }
         
         .upload-area.dragover {
-            border-color: #00f2fe;
-            background: #e6f3ff;
+            border-color: #764ba2;
+            background: #e8ebff;
             transform: scale(1.02);
         }
         
         .upload-icon {
-            font-size: 4em;
-            color: #4facfe;
-            margin-bottom: 20px;
+            font-size: 3em;
+            color: #667eea;
+            margin-bottom: 15px;
         }
         
         .upload-text {
-            font-size: 1.3em;
             color: #333;
+            font-size: 1.1em;
             margin-bottom: 10px;
         }
         
-        .upload-subtext {
+        .upload-hint {
             color: #666;
             font-size: 0.9em;
         }
         
-        #fileInput {
+        .file-input {
             display: none;
         }
         
-        .file-list {
-            margin-top: 20px;
+        .report-type-section {
+            margin: 20px 0;
             padding: 20px;
-            background: #f8f9fa;
+            background: #f8f9ff;
             border-radius: 10px;
-            display: none;
+            border: 1px solid #e0e6ff;
         }
         
-        .file-item {
+        .report-type-title {
+            font-size: 1.2em;
+            color: #333;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        
+        .report-options {
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        
+        .report-option {
             display: flex;
             align-items: center;
-            padding: 10px;
+            gap: 8px;
+            padding: 10px 15px;
             background: white;
-            margin-bottom: 10px;
+            border: 2px solid #e0e6ff;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            cursor: pointer;
+            transition: all 0.3s ease;
         }
         
-        .file-icon {
-            font-size: 1.5em;
-            margin-right: 15px;
-            color: #4facfe;
+        .report-option:hover {
+            border-color: #667eea;
+            background: #f0f2ff;
         }
         
-        .file-info {
-            flex: 1;
+        .report-option input[type="radio"] {
+            margin: 0;
         }
         
-        .file-name {
-            font-weight: 500;
-            color: #333;
-        }
-        
-        .file-size {
-            font-size: 0.8em;
-            color: #666;
+        .report-option.selected {
+            border-color: #667eea;
+            background: #667eea;
+            color: white;
         }
         
         .analyze-btn {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             border: none;
             padding: 15px 40px;
-            font-size: 1.1em;
             border-radius: 50px;
+            font-size: 1.1em;
+            font-weight: 600;
             cursor: pointer;
             transition: all 0.3s ease;
             margin-top: 20px;
             width: 100%;
+            max-width: 300px;
         }
         
         .analyze-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(79, 172, 254, 0.3);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
         }
         
         .analyze-btn:disabled {
@@ -1442,187 +2074,247 @@ HTML_TEMPLATE = '''
         
         .progress {
             display: none;
-            margin-top: 20px;
+            margin: 20px 0;
         }
         
         .progress-bar {
             width: 100%;
             height: 8px;
-            background: #e0e0e0;
+            background: #e0e6ff;
             border-radius: 4px;
             overflow: hidden;
         }
         
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #4facfe, #00f2fe);
+            background: linear-gradient(90deg, #667eea, #764ba2);
             width: 0%;
             transition: width 0.3s ease;
             animation: pulse 2s infinite;
         }
         
         @keyframes pulse {
-            0% { opacity: 1; }
+            0%, 100% { opacity: 1; }
             50% { opacity: 0.7; }
-            100% { opacity: 1; }
         }
         
-        .progress-text {
-            text-align: center;
-            margin-top: 10px;
+        .file-list {
+            margin: 20px 0;
+            text-align: left;
+        }
+        
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px;
+            background: #f8f9ff;
+            border-radius: 8px;
+            margin: 5px 0;
+            border: 1px solid #e0e6ff;
+        }
+        
+        .file-name {
+            color: #333;
+            font-weight: 500;
+        }
+        
+        .file-size {
             color: #666;
             font-size: 0.9em;
         }
         
-        .result {
+        .remove-file {
+            background: #ff4757;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 25px;
+            height: 25px;
+            cursor: pointer;
+            font-size: 0.8em;
+        }
+        
+        .results {
             display: none;
             margin-top: 30px;
             padding: 20px;
-            background: #f8f9fa;
-            border-radius: 10px;
+            background: #f8f9ff;
+            border-radius: 15px;
+            border: 1px solid #e0e6ff;
         }
         
-        .result.success {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
+        .success-icon {
+            font-size: 3em;
+            color: #2ed573;
+            margin-bottom: 15px;
         }
         
-        .result.error {
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
+        .download-links {
+            margin: 20px 0;
         }
         
         .download-btn {
-            background: #28a745;
-            color: white;
-            border: none;
-            padding: 12px 30px;
-            border-radius: 25px;
-            cursor: pointer;
-            text-decoration: none;
             display: inline-block;
-            margin-top: 15px;
+            background: #2ed573;
+            color: white;
+            text-decoration: none;
+            padding: 12px 25px;
+            border-radius: 25px;
+            margin: 5px;
+            font-weight: 600;
             transition: all 0.3s ease;
         }
         
         .download-btn:hover {
-            background: #218838;
+            background: #26d467;
             transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(46, 213, 115, 0.3);
         }
         
-        .features {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            margin-top: 30px;
+        .download-btn.technical {
+            background: #3742fa;
         }
         
-        .feature {
-            text-align: center;
-            padding: 20px;
-            background: #f8f9ff;
-            border-radius: 15px;
+        .download-btn.technical:hover {
+            background: #2f3542;
         }
         
-        .feature-icon {
-            font-size: 2.5em;
-            color: #4facfe;
-            margin-bottom: 15px;
+        .download-btn.commercial {
+            background: #ff6b6b;
         }
         
-        .feature h3 {
-            color: #333;
-            margin-bottom: 10px;
+        .download-btn.commercial:hover {
+            background: #ff5252;
         }
         
-        .feature p {
-            color: #666;
+        .error {
+            color: #ff4757;
+            background: #ffe0e0;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border: 1px solid #ffcdd2;
+        }
+        
+        .azure-status {
+            margin: 15px 0;
+            padding: 10px;
+            border-radius: 8px;
             font-size: 0.9em;
         }
         
-        .azure-badge {
-            background: #0078d4;
-            color: white;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.8em;
-            display: inline-block;
-            margin-top: 10px;
+        .azure-active {
+            background: #e8f5e8;
+            color: #2e7d32;
+            border: 1px solid #c8e6c9;
+        }
+        
+        .azure-inactive {
+            background: #fff3e0;
+            color: #f57c00;
+            border: 1px solid #ffcc02;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+                margin: 10px;
+            }
+            
+            .logo {
+                font-size: 2em;
+            }
+            
+            .report-options {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .report-option {
+                width: 100%;
+                max-width: 250px;
+                justify-content: center;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🚀 Analisador de Propostas</h1>
-            <p>Análise inteligente com Azure Document Intelligence</p>
-            <div class="azure-badge">Powered by Azure AI</div>
+        <div class="logo">📊 Arias Analyzer Pro</div>
+        <div class="subtitle">Análise Inteligente de Propostas com Azure AI</div>
+        
+        <div class="azure-status" id="azureStatus">
+            🤖 Azure Document Intelligence: Ativo
         </div>
         
-        <div class="content">
-            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+        <form id="uploadForm" enctype="multipart/form-data">
+            <div class="upload-area" id="uploadArea">
                 <div class="upload-icon">📁</div>
-                <div class="upload-text">Clique aqui ou arraste seus arquivos</div>
-                <div class="upload-subtext">Suporte para PDF, Excel (.xlsx, .xls) - Máximo 50MB</div>
+                <div class="upload-text">Clique aqui ou arraste os arquivos</div>
+                <div class="upload-hint">PDFs e planilhas Excel (máx. 50MB cada)</div>
+                <input type="file" id="fileInput" name="files" multiple accept=".pdf,.xlsx,.xls" class="file-input">
             </div>
-            
-            <input type="file" id="fileInput" multiple accept=".pdf,.xlsx,.xls">
             
             <div class="file-list" id="fileList"></div>
             
-            <button class="analyze-btn" id="analyzeBtn" onclick="analyzeFiles()" disabled>
-                🔍 Analisar Propostas
-            </button>
-            
-            <div class="progress" id="progress">
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill"></div>
+            <div class="report-type-section">
+                <div class="report-type-title">🎯 Tipo de Relatório</div>
+                <div class="report-options">
+                    <label class="report-option" for="reportBoth">
+                        <input type="radio" id="reportBoth" name="report_type" value="both" checked>
+                        <span>📋 Ambos os Relatórios</span>
+                    </label>
+                    <label class="report-option" for="reportTechnical">
+                        <input type="radio" id="reportTechnical" name="report_type" value="technical">
+                        <span>🔧 Apenas Técnico</span>
+                    </label>
+                    <label class="report-option" for="reportCommercial">
+                        <input type="radio" id="reportCommercial" name="report_type" value="commercial">
+                        <span>💰 Apenas Comercial</span>
+                    </label>
                 </div>
-                <div class="progress-text" id="progressText">Processando arquivos...</div>
             </div>
             
-            <div class="result" id="result"></div>
-            
-            <div class="features">
-                <div class="feature">
-                    <div class="feature-icon">🤖</div>
-                    <h3>Azure AI</h3>
-                    <p>Extração inteligente de dados usando Azure Document Intelligence</p>
-                </div>
-                <div class="feature">
-                    <div class="feature-icon">📊</div>
-                    <h3>Análise Completa</h3>
-                    <p>Comparação técnica e comercial detalhada das propostas</p>
-                </div>
-                <div class="feature">
-                    <div class="feature-icon">📋</div>
-                    <h3>Relatório Profissional</h3>
-                    <p>Documento PDF formatado pronto para apresentação</p>
-                </div>
+            <button type="submit" class="analyze-btn" id="analyzeBtn" disabled>
+                🚀 Analisar Propostas
+            </button>
+        </form>
+        
+        <div class="progress" id="progress">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div style="margin-top: 10px; color: #667eea; font-weight: 600;" id="progressText">
+                Processando arquivos...
             </div>
         </div>
+        
+        <div class="results" id="results"></div>
     </div>
 
     <script>
-        let selectedFiles = [];
-        
-        // Configurar drag and drop
-        const uploadArea = document.querySelector('.upload-area');
+        const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const fileList = document.getElementById('fileList');
         const analyzeBtn = document.getElementById('analyzeBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const results = document.getElementById('results');
         
+        let selectedFiles = [];
+        
+        // Eventos de drag and drop
+        uploadArea.addEventListener('click', () => fileInput.click());
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('dragover');
         });
-        
         uploadArea.addEventListener('dragleave', () => {
             uploadArea.classList.remove('dragover');
         });
-        
         uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadArea.classList.remove('dragover');
@@ -1633,59 +2325,107 @@ HTML_TEMPLATE = '''
             handleFiles(e.target.files);
         });
         
-        function handleFiles(files) {
-            selectedFiles = Array.from(files);
-            displayFiles();
-            analyzeBtn.disabled = selectedFiles.length === 0;
+        // Gerenciar seleção de tipo de relatório
+        document.querySelectorAll('input[name="report_type"]').forEach(radio => {
+            radio.addEventListener('change', updateReportSelection);
+        });
+        
+        function updateReportSelection() {
+            document.querySelectorAll('.report-option').forEach(option => {
+                option.classList.remove('selected');
+            });
+            
+            const selected = document.querySelector('input[name="report_type"]:checked');
+            if (selected) {
+                selected.closest('.report-option').classList.add('selected');
+            }
         }
         
-        function displayFiles() {
-            if (selectedFiles.length === 0) {
-                fileList.style.display = 'none';
-                return;
-            }
+        // Inicializar seleção
+        updateReportSelection();
+        
+        function handleFiles(files) {
+            Array.from(files).forEach(file => {
+                if (file.size > 50 * 1024 * 1024) {
+                    alert(`Arquivo ${file.name} é muito grande (máx. 50MB)`);
+                    return;
+                }
+                
+                if (!file.name.match(/\.(pdf|xlsx|xls)$/i)) {
+                    alert(`Arquivo ${file.name} não é suportado`);
+                    return;
+                }
+                
+                if (!selectedFiles.find(f => f.name === file.name)) {
+                    selectedFiles.push(file);
+                }
+            });
             
-            fileList.style.display = 'block';
-            fileList.innerHTML = '<h3>📁 Arquivos Selecionados:</h3>';
+            updateFileList();
+            updateAnalyzeButton();
+        }
+        
+        function updateFileList() {
+            fileList.innerHTML = '';
             
             selectedFiles.forEach((file, index) => {
                 const fileItem = document.createElement('div');
                 fileItem.className = 'file-item';
-                
-                const icon = file.type.includes('pdf') ? '📄' : '📊';
-                const size = (file.size / 1024 / 1024).toFixed(2);
-                
                 fileItem.innerHTML = `
-                    <div class="file-icon">${icon}</div>
-                    <div class="file-info">
+                    <div>
                         <div class="file-name">${file.name}</div>
-                        <div class="file-size">${size} MB</div>
+                        <div class="file-size">${formatFileSize(file.size)}</div>
                     </div>
+                    <button type="button" class="remove-file" onclick="removeFile(${index})">×</button>
                 `;
-                
                 fileList.appendChild(fileItem);
             });
         }
         
-        async function analyzeFiles() {
-            if (selectedFiles.length === 0) return;
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+            updateAnalyzeButton();
+        }
+        
+        function updateAnalyzeButton() {
+            analyzeBtn.disabled = selectedFiles.length === 0;
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        uploadForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (selectedFiles.length === 0) {
+                alert('Selecione pelo menos um arquivo');
+                return;
+            }
             
             const formData = new FormData();
             selectedFiles.forEach(file => {
                 formData.append('files', file);
             });
             
+            const reportType = document.querySelector('input[name="report_type"]:checked').value;
+            formData.append('report_type', reportType);
+            
             // Mostrar progresso
-            document.getElementById('progress').style.display = 'block';
-            document.getElementById('result').style.display = 'none';
+            progress.style.display = 'block';
+            results.style.display = 'none';
             analyzeBtn.disabled = true;
             
-            // Simular progresso
-            let progress = 0;
+            let progressValue = 0;
             const progressInterval = setInterval(() => {
-                progress += Math.random() * 15;
-                if (progress > 90) progress = 90;
-                document.getElementById('progressFill').style.width = progress + '%';
+                progressValue += Math.random() * 15;
+                if (progressValue > 90) progressValue = 90;
+                progressFill.style.width = progressValue + '%';
             }, 500);
             
             try {
@@ -1697,39 +2437,68 @@ HTML_TEMPLATE = '''
                 const result = await response.json();
                 
                 clearInterval(progressInterval);
-                document.getElementById('progressFill').style.width = '100%';
+                progressFill.style.width = '100%';
                 
                 setTimeout(() => {
-                    document.getElementById('progress').style.display = 'none';
-                    showResult(result, response.ok);
+                    progress.style.display = 'none';
+                    
+                    if (result.success) {
+                        showResults(result);
+                    } else {
+                        showError(result.error || 'Erro desconhecido');
+                    }
+                    
                     analyzeBtn.disabled = false;
                 }, 1000);
                 
             } catch (error) {
                 clearInterval(progressInterval);
-                document.getElementById('progress').style.display = 'none';
-                showResult({error: 'Erro de conexão: ' + error.message}, false);
+                progress.style.display = 'none';
+                showError('Erro de conexão: ' + error.message);
                 analyzeBtn.disabled = false;
             }
+        });
+        
+        function showResults(result) {
+            let downloadLinks = '';
+            
+            result.reports.forEach(report => {
+                const btnClass = report.type === 'technical' ? 'technical' : 
+                               report.type === 'commercial' ? 'commercial' : '';
+                downloadLinks += `
+                    <a href="${report.url}" class="download-btn ${btnClass}" target="_blank">
+                        📄 ${report.title}
+                    </a>
+                `;
+            });
+            
+            results.innerHTML = `
+                <div class="success-icon">✅</div>
+                <h3 style="color: #2ed573; margin-bottom: 15px;">Análise Concluída!</h3>
+                <p style="margin-bottom: 20px;">
+                    ${result.reports.length} relatório(s) gerado(s) com sucesso.
+                </p>
+                <div class="download-links">
+                    ${downloadLinks}
+                </div>
+                <div style="margin-top: 20px; font-size: 0.9em; color: #666;">
+                    <strong>Resumo:</strong><br>
+                    • Total de propostas: ${result.summary.total_proposals || 0}<br>
+                    ${result.summary.best_technical ? `• Melhor técnica: ${result.summary.best_technical}<br>` : ''}
+                    ${result.summary.best_commercial ? `• Melhor comercial: ${result.summary.best_commercial}` : ''}
+                </div>
+            `;
+            results.style.display = 'block';
         }
         
-        function showResult(result, success) {
-            const resultDiv = document.getElementById('result');
-            resultDiv.style.display = 'block';
-            resultDiv.className = 'result ' + (success ? 'success' : 'error');
-            
-            if (success) {
-                resultDiv.innerHTML = `
-                    <h3>✅ Análise Concluída!</h3>
-                    <p>${result.message}</p>
-                    <a href="${result.report_url}" class="download-btn">📥 Baixar Relatório PDF</a>
-                `;
-            } else {
-                resultDiv.innerHTML = `
-                    <h3>❌ Erro na Análise</h3>
-                    <p>${result.error}</p>
-                `;
-            }
+        function showError(message) {
+            results.innerHTML = `
+                <div class="error">
+                    <strong>❌ Erro no processamento:</strong><br>
+                    ${message}
+                </div>
+            `;
+            results.style.display = 'block';
         }
     </script>
 </body>
