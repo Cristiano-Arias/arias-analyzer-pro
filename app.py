@@ -6,22 +6,12 @@ from flask import Flask, request, jsonify, send_file, render_template_string
 from flask_cors import CORS
 import re
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 import PyPDF2
-from openpyxl import Workbook
-import json
-
-# Configuração do Azure Document Intelligence
-from azure.ai.documentintelligence import DocumentIntelligenceClient
-from azure.core.credentials import AzureKeyCredential
-
-# Configurações Azure
-AZURE_ENDPOINT = "https://proposal-analyzer-eastus.cognitiveservices.azure.com/"
-AZURE_KEY = "2WSbc2H8NbocAvetZtpuqx6fhkHULpBgLyTQg2tD8BKG2E74Pm1wJQQJ99BGACYeBjFXJ3w3AAALACOGu7AE"
 
 app = Flask(__name__)
 CORS(app)
@@ -30,202 +20,188 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Inicializar cliente Azure
-try:
-    azure_client = DocumentIntelligenceClient(
-        endpoint=AZURE_ENDPOINT,
-        credential=AzureKeyCredential(AZURE_KEY)
-    )
-    logger.info("Azure Document Intelligence inicializado com sucesso")
-except Exception as e:
-    logger.error(f"Erro ao inicializar Azure: {e}")
-    azure_client = None
-
-class ProposalAnalyzer:
+class SimpleProposalAnalyzer:
     def __init__(self):
-        self.azure_client = azure_client
-        
-    def extract_with_azure(self, file_path):
-        """Extrai dados usando Azure Document Intelligence"""
-        try:
-            logger.info(f"Iniciando extração Azure para: {file_path}")
-            
-            with open(file_path, "rb") as f:
-                poller = self.azure_client.begin_analyze_document(
-                    "prebuilt-layout", 
-                    analyze_request=f,
-                    content_type="application/pdf"
-                )
-                result = poller.result()
-            
-            # Extrair texto completo
-            full_text = ""
-            if result.content:
-                full_text = result.content
-            
-            confidence = getattr(result, 'confidence', 0.7) * 100
-            logger.info(f"Extração Azure concluída: {confidence:.1f}% confiança")
-            
-            return full_text, confidence
-            
-        except Exception as e:
-            logger.error(f"Erro na extração Azure: {e}")
-            return None, 0
+        pass
     
-    def extract_with_pypdf2(self, file_path):
-        """Extrai dados usando PyPDF2 como fallback"""
+    def extract_text_from_pdf(self, file_path):
+        """Extrai texto do PDF usando PyPDF2"""
         try:
-            logger.warning("Usando extração de fallback")
             text = ""
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
                 for page in pdf_reader.pages:
                     text += page.extract_text() + "\n"
-            return text, 50.0  # Confiança menor para fallback
+            return text
         except Exception as e:
-            logger.error(f"Erro na extração PyPDF2: {e}")
-            return "", 0
+            logger.error(f"Erro na extração: {e}")
+            return ""
     
-    def extract_company_data(self, text):
-        """Extrai dados específicos da empresa da proposta"""
+    def extract_basic_data(self, text, filename):
+        """Extrai dados básicos da proposta"""
         data = {
-            'nome_empresa': '',
-            'cnpj': '',
-            'endereco': '',
-            'telefone': '',
-            'email': '',
-            'objeto': '',
-            'prazo_total': 0,
-            'prazo_mobilizacao': 0,
-            'prazo_execucao': 0,
+            'arquivo': filename,
+            'empresa': 'Não identificado',
+            'cnpj': 'Não informado',
+            'prazo_dias': 0,
+            'valor': 0.0,
             'equipe_total': 0,
-            'engenheiros': [],
-            'metodologia': '',
-            'garantia_civil': 0,
-            'garantia_outros': 0,
-            'equipamentos': [],
-            'experiencia': [],
-            'valor_total': 0.0,
-            'bdi': 0.0
+            'garantia_anos': 0,
+            'telefone': 'Não informado',
+            'email': 'Não informado',
+            'objeto': 'Não identificado'
         }
         
-        # Extrair nome da empresa (primeira linha em maiúscula)
-        nome_match = re.search(r'^([A-ZÁÊÇÕ\s&-]+(?:LTDA|S\.A\.|EIRELI|ME|EPP)?)', text, re.MULTILINE)
-        if nome_match:
-            data['nome_empresa'] = nome_match.group(1).strip()
+        # Extrair nome da empresa (primeira linha em maiúscula ou com palavras-chave)
+        empresa_patterns = [
+            r'^([A-ZÁÊÇÕ\s&-]+(?:LTDA|S\.A\.|EIRELI|ME|EPP|ENGENHARIA|CONSTRUÇÃO|PROJETOS))',
+            r'([A-Z][A-Za-z\s&-]+(?:LTDA|ENGENHARIA|CONSTRUÇÃO|PROJETOS)[A-Za-z\s&-]*)',
+            r'EMPRESA[:\s]*([^\n]+)',
+            r'RAZÃO SOCIAL[:\s]*([^\n]+)'
+        ]
+        
+        for pattern in empresa_patterns:
+            match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+            if match:
+                empresa = match.group(1).strip()
+                if len(empresa) > 5:  # Filtrar nomes muito curtos
+                    data['empresa'] = empresa[:50]  # Limitar tamanho
+                    break
         
         # Extrair CNPJ
-        cnpj_match = re.search(r'CNPJ[:\s]*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})', text, re.IGNORECASE)
-        if cnpj_match:
-            data['cnpj'] = cnpj_match.group(1)
-        
-        # Extrair endereço
-        endereco_match = re.search(r'(?:Avenida|Rua|Av\.|R\.)\s+([^,\n]+(?:,\s*[^,\n]+)*)', text, re.IGNORECASE)
-        if endereco_match:
-            data['endereco'] = endereco_match.group(0).strip()
-        
-        # Extrair telefone
-        telefone_match = re.search(r'(?:Fone|Tel|Telefone)[:\s]*\(?(\d{2})\)?\s*\d{4,5}[-\.\s]?\d{4}', text, re.IGNORECASE)
-        if telefone_match:
-            data['telefone'] = telefone_match.group(0).split(':')[-1].strip()
-        
-        # Extrair email
-        email_match = re.search(r'Email[:\s]*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', text, re.IGNORECASE)
-        if email_match:
-            data['email'] = email_match.group(1)
-        
-        # Extrair objeto/serviço
-        objeto_patterns = [
-            r'SERVIÇO[:\s]*([^\n]+(?:\n[^\n]+)*?)(?=\n\n|\nPROPOSTA|\nAPRESENTAÇÃO)',
-            r'OBRA[:\s]*([^\n]+(?:\n[^\n]+)*?)(?=\n\n|\nLOCAL)',
-            r'OBJETO[:\s]*([^\n]+(?:\n[^\n]+)*?)(?=\n\n|\nESCOPO)'
+        cnpj_patterns = [
+            r'CNPJ[:\s]*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})',
+            r'(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})'
         ]
-        for pattern in objeto_patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        
+        for pattern in cnpj_patterns:
+            match = re.search(pattern, text)
             if match:
-                data['objeto'] = match.group(1).strip()
+                data['cnpj'] = match.group(1)
                 break
         
-        # Extrair prazos
+        # Extrair prazo (buscar por números seguidos de "dias")
         prazo_patterns = [
-            r'prazo[^:]*?(\d+)\s*dias?\s*(?:para\s*)?(?:execução|total)', 
+            r'(\d+)\s*dias?\s*(?:para|de)?\s*(?:execução|conclusão|prazo)',
+            r'prazo[^:]*?(\d+)\s*dias?',
             r'execução[^:]*?(\d+)\s*dias?',
-            r'(\d+)\s*dias?\s*(?:para\s*)?(?:execução|conclusão)'
+            r'(\d+)\s*dias?\s*corridos'
         ]
+        
+        prazos_encontrados = []
         for pattern in prazo_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                prazo = int(match)
+                if 10 <= prazo <= 365:  # Filtrar prazos realistas
+                    prazos_encontrados.append(prazo)
+        
+        if prazos_encontrados:
+            data['prazo_dias'] = max(prazos_encontrados)  # Pegar o maior prazo encontrado
+        
+        # Extrair valor (buscar por valores em reais)
+        valor_patterns = [
+            r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',
+            r'VALOR[^:]*?R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',
+            r'TOTAL[^:]*?R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)'
+        ]
+        
+        for pattern in valor_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                data['prazo_execucao'] = int(match.group(1))
-                break
+                valor_str = match.group(1).replace('.', '').replace(',', '.')
+                try:
+                    valor = float(valor_str)
+                    if valor > 1000:  # Filtrar valores muito baixos
+                        data['valor'] = valor
+                        break
+                except:
+                    continue
         
-        # Extrair prazo de mobilização
-        mob_match = re.search(r'mobilização[^:]*?(\d+)\s*dias?', text, re.IGNORECASE)
-        if mob_match:
-            data['prazo_mobilizacao'] = int(mob_match.group(1))
-        
-        # Calcular prazo total
-        data['prazo_total'] = data['prazo_execucao'] + data['prazo_mobilizacao']
-        
-        # Extrair equipe técnica
-        engenheiros = re.findall(r'([A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*[-–]\s*Engenheiro\s+(\w+)', text)
-        data['engenheiros'] = [{'nome': nome, 'especialidade': esp} for nome, esp in engenheiros]
-        
-        # Contar equipe total (buscar por números de pessoas)
+        # Extrair equipe (contar pessoas mencionadas)
         equipe_patterns = [
-            r'(\d+)\s*(?:Pedreiros?|pedreiros?)',
-            r'(\d+)\s*(?:Auxiliares?|auxiliares?)',
-            r'(\d+)\s*(?:Eletricistas?|eletricistas?)',
-            r'(\d+)\s*(?:Operadores?|operadores?)',
-            r'(\d+)\s*(?:Técnicos?|técnicos?)'
+            r'(\d+)\s*(?:pedreiros?|auxiliares?|eletricistas?|operadores?|técnicos?|engenheiros?)',
+            r'equipe[^:]*?(\d+)\s*(?:pessoas?|profissionais?)',
+            r'(\d+)\s*(?:pessoas?|profissionais?|colaboradores?)'
         ]
-        total_equipe = len(data['engenheiros'])  # Começar com engenheiros
+        
+        total_equipe = 0
         for pattern in equipe_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
-                total_equipe += int(match)
-        data['equipe_total'] = total_equipe
+                num = int(match)
+                if 1 <= num <= 50:  # Filtrar números realistas
+                    total_equipe += num
         
-        # Extrair metodologia
-        metodologia_match = re.search(r'(?:PLANO DE EXECUÇÃO|METODOLOGIA|EXECUÇÃO)[:\s]*([^§]+?)(?=\n\d+\.\d+|\nGARANTIAS|\nPRAZO)', text, re.IGNORECASE | re.DOTALL)
-        if metodologia_match:
-            data['metodologia'] = metodologia_match.group(1).strip()[:500]  # Limitar tamanho
+        data['equipe_total'] = min(total_equipe, 100)  # Limitar a 100 pessoas
         
-        # Extrair garantias
-        garantia_civil = re.search(r'(\d+)\s*(?:anos?|meses?)\s*(?:para\s*)?(?:obras?\s*)?civis?', text, re.IGNORECASE)
-        if garantia_civil:
-            data['garantia_civil'] = int(garantia_civil.group(1))
+        # Extrair garantia
+        garantia_patterns = [
+            r'(\d+)\s*anos?\s*(?:de\s*)?garantia',
+            r'garantia[^:]*?(\d+)\s*anos?',
+            r'(\d+)\s*anos?\s*(?:para\s*)?(?:obras?|serviços?)'
+        ]
         
-        garantia_outros = re.search(r'(\d+)\s*(?:anos?|meses?)\s*(?:para\s*)?(?:demais|outros|serviços)', text, re.IGNORECASE)
-        if garantia_outros:
-            data['garantia_outros'] = int(garantia_outros.group(1))
+        for pattern in garantia_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                garantia = int(match.group(1))
+                if 1 <= garantia <= 10:  # Filtrar garantias realistas
+                    data['garantia_anos'] = garantia
+                    break
         
-        # Extrair equipamentos
-        equipamentos = re.findall(r'(?:Locação|Fornecimento)\s+de\s+([^,\n]+)', text, re.IGNORECASE)
-        data['equipamentos'] = equipamentos[:10]  # Limitar a 10 itens
+        # Extrair telefone
+        telefone_patterns = [
+            r'(?:fone|tel|telefone)[:\s]*\(?(\d{2})\)?\s*\d{4,5}[-\.\s]?\d{4}',
+            r'\(?(\d{2})\)?\s*\d{4,5}[-\.\s]?\d{4}'
+        ]
         
-        # Extrair experiência/referências
-        experiencia = re.findall(r'Cliente[:\s]*([^\n]+)', text, re.IGNORECASE)
-        data['experiencia'] = experiencia[:5]  # Limitar a 5 referências
+        for pattern in telefone_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                data['telefone'] = match.group(0).strip()
+                break
+        
+        # Extrair email
+        email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', text)
+        if email_match:
+            data['email'] = email_match.group(1)
+        
+        # Extrair objeto (primeira frase que menciona serviço/obra)
+        objeto_patterns = [
+            r'(?:serviço|obra|objeto)[:\s]*([^\n]+)',
+            r'contratação[^:]*?([^\n]+)',
+            r'execução[^:]*?([^\n]+)'
+        ]
+        
+        for pattern in objeto_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                objeto = match.group(1).strip()
+                if len(objeto) > 10:
+                    data['objeto'] = objeto[:100]  # Limitar tamanho
+                    break
         
         return data
     
-    def calculate_technical_score(self, data):
-        """Calcula score técnico baseado nos dados extraídos"""
+    def calculate_score(self, data):
+        """Calcula score simples baseado nos dados"""
         score = 0
-        max_score = 100
         
-        # Prazo (25 pontos) - Quanto menor, melhor
-        if data['prazo_total'] > 0:
-            if data['prazo_total'] <= 60:
+        # Prazo (30 pontos) - quanto menor, melhor
+        if data['prazo_dias'] > 0:
+            if data['prazo_dias'] <= 30:
+                score += 30
+            elif data['prazo_dias'] <= 60:
                 score += 25
-            elif data['prazo_total'] <= 90:
+            elif data['prazo_dias'] <= 90:
                 score += 20
-            elif data['prazo_total'] <= 120:
+            elif data['prazo_dias'] <= 120:
                 score += 15
             else:
                 score += 10
         
-        # Equipe técnica (25 pontos)
+        # Equipe (25 pontos)
         if data['equipe_total'] > 0:
             if data['equipe_total'] >= 15:
                 score += 25
@@ -236,42 +212,33 @@ class ProposalAnalyzer:
             else:
                 score += 10
         
-        # Engenheiros (20 pontos)
-        num_engenheiros = len(data['engenheiros'])
-        if num_engenheiros >= 3:
-            score += 20
-        elif num_engenheiros >= 2:
-            score += 15
-        elif num_engenheiros >= 1:
-            score += 10
-        
-        # Metodologia (15 pontos)
-        if data['metodologia']:
-            if len(data['metodologia']) > 200:
+        # Garantia (20 pontos)
+        if data['garantia_anos'] > 0:
+            if data['garantia_anos'] >= 5:
+                score += 20
+            elif data['garantia_anos'] >= 3:
                 score += 15
-            elif len(data['metodologia']) > 100:
+            elif data['garantia_anos'] >= 1:
                 score += 10
-            else:
-                score += 5
         
-        # Experiência (10 pontos)
-        num_experiencia = len(data['experiencia'])
-        if num_experiencia >= 5:
-            score += 10
-        elif num_experiencia >= 3:
-            score += 7
-        elif num_experiencia >= 1:
-            score += 5
+        # Dados completos (25 pontos)
+        completude = 0
+        if data['empresa'] != 'Não identificado':
+            completude += 5
+        if data['cnpj'] != 'Não informado':
+            completude += 5
+        if data['prazo_dias'] > 0:
+            completude += 5
+        if data['equipe_total'] > 0:
+            completude += 5
+        if data['telefone'] != 'Não informado':
+            completude += 2.5
+        if data['email'] != 'Não informado':
+            completude += 2.5
         
-        # Garantias (5 pontos)
-        if data['garantia_civil'] >= 5:
-            score += 5
-        elif data['garantia_civil'] >= 3:
-            score += 3
-        elif data['garantia_civil'] >= 1:
-            score += 2
+        score += completude
         
-        return min(score, max_score)
+        return min(score, 100)
     
     def analyze_proposals(self, files):
         """Analisa múltiplas propostas"""
@@ -279,37 +246,29 @@ class ProposalAnalyzer:
         
         for file_info in files:
             file_path = file_info['path']
-            logger.info(f"Analisando: {file_path}")
+            filename = file_info['original_name']
             
-            # Tentar extração com Azure primeiro
-            text, confidence = None, 0
-            if self.azure_client:
-                text, confidence = self.extract_with_azure(file_path)
+            logger.info(f"Analisando: {filename}")
             
-            # Fallback para PyPDF2 se Azure falhar
-            if not text:
-                text, confidence = self.extract_with_pypdf2(file_path)
+            # Extrair texto
+            text = self.extract_text_from_pdf(file_path)
             
             if text:
-                # Extrair dados da empresa
-                company_data = self.extract_company_data(text)
+                # Extrair dados básicos
+                data = self.extract_basic_data(text, filename)
                 
-                # Calcular score técnico
-                technical_score = self.calculate_technical_score(company_data)
+                # Calcular score
+                data['score'] = self.calculate_score(data)
                 
-                # Adicionar informações extras
-                company_data['confidence'] = confidence
-                company_data['technical_score'] = technical_score
-                company_data['file_name'] = file_info['original_name']
-                
-                results.append(company_data)
+                results.append(data)
+                logger.info(f"Dados extraídos para {filename}: {data['empresa']}")
             else:
-                logger.error(f"Falha na extração para: {file_path}")
+                logger.error(f"Falha na extração para: {filename}")
         
         return results
     
-    def generate_technical_report(self, proposals, output_path):
-        """Gera relatório técnico especializado"""
+    def generate_comparison_report(self, proposals, output_path):
+        """Gera relatório de comparação simples"""
         doc = SimpleDocTemplate(output_path, pagesize=A4, topMargin=0.5*inch)
         styles = getSampleStyleSheet()
         story = []
@@ -318,7 +277,7 @@ class ProposalAnalyzer:
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Title'],
-            fontSize=18,
+            fontSize=20,
             spaceAfter=30,
             textColor=colors.darkblue,
             alignment=TA_CENTER
@@ -328,328 +287,125 @@ class ProposalAnalyzer:
             'CustomHeading',
             parent=styles['Heading2'],
             fontSize=14,
-            spaceAfter=12,
-            textColor=colors.darkblue,
-            leftIndent=0
+            spaceAfter=15,
+            textColor=colors.darkblue
         )
         
         # Título
-        story.append(Paragraph("ANÁLISE E EQUALIZAÇÃO TÉCNICA DE PROPOSTAS", title_style))
-        story.append(Paragraph("Avaliação Técnica Especializada", styles['Normal']))
-        story.append(Paragraph(f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles['Normal']))
-        story.append(Spacer(1, 20))
+        story.append(Paragraph("ANÁLISE COMPARATIVA DE PROPOSTAS", title_style))
+        story.append(Paragraph(f"Relatório gerado em: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles['Normal']))
+        story.append(Spacer(1, 30))
         
-        # Seção 1: Ranking Técnico
-        story.append(Paragraph("SEÇÃO 1: RANKING TÉCNICO GERAL", heading_style))
+        # Ranking geral
+        story.append(Paragraph("1. RANKING GERAL", heading_style))
         
-        # Ordenar por score técnico
-        sorted_proposals = sorted(proposals, key=lambda x: x['technical_score'], reverse=True)
+        # Ordenar por score
+        sorted_proposals = sorted(proposals, key=lambda x: x['score'], reverse=True)
         
         # Tabela de ranking
-        ranking_data = [['Posição', 'Empresa', 'Score Técnico', 'Prazo (dias)', 'Equipe']]
+        ranking_data = [['Pos.', 'Empresa', 'Score', 'Prazo', 'Equipe', 'Garantia']]
+        
         for i, prop in enumerate(sorted_proposals, 1):
+            empresa_nome = prop['empresa'][:25] + '...' if len(prop['empresa']) > 25 else prop['empresa']
+            prazo_str = f"{prop['prazo_dias']} dias" if prop['prazo_dias'] > 0 else 'N/I'
+            equipe_str = f"{prop['equipe_total']} pessoas" if prop['equipe_total'] > 0 else 'N/I'
+            garantia_str = f"{prop['garantia_anos']} anos" if prop['garantia_anos'] > 0 else 'N/I'
+            
             ranking_data.append([
-                str(i),
-                prop['nome_empresa'][:30] if prop['nome_empresa'] else 'N/I',
-                f"{prop['technical_score']:.1f}%",
-                str(prop['prazo_total']) if prop['prazo_total'] > 0 else 'N/I',
-                str(prop['equipe_total']) if prop['equipe_total'] > 0 else 'N/I'
+                f"{i}º",
+                empresa_nome,
+                f"{prop['score']:.0f}%",
+                prazo_str,
+                equipe_str,
+                garantia_str
             ])
         
-        ranking_table = Table(ranking_data, colWidths=[0.8*inch, 2.5*inch, 1.2*inch, 1.2*inch, 1*inch])
+        ranking_table = Table(ranking_data, colWidths=[0.5*inch, 2.5*inch, 0.8*inch, 1*inch, 1*inch, 0.8*inch])
         ranking_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
         ]))
-        story.append(ranking_table)
-        story.append(Spacer(1, 20))
         
-        # Seção 2: Análise Detalhada por Empresa
-        story.append(Paragraph("SEÇÃO 2: ANÁLISE TÉCNICA DETALHADA", heading_style))
+        story.append(ranking_table)
+        story.append(Spacer(1, 30))
+        
+        # Detalhes por empresa
+        story.append(Paragraph("2. DETALHES POR EMPRESA", heading_style))
         
         for i, prop in enumerate(sorted_proposals):
-            if i > 0:
-                story.append(PageBreak())
-            
             # Nome da empresa
-            story.append(Paragraph(f"{prop['nome_empresa']} - Score: {prop['technical_score']:.1f}%", 
+            story.append(Paragraph(f"{i+1}º LUGAR: {prop['empresa']}", 
                                  ParagraphStyle('CompanyTitle', parent=styles['Heading3'], 
                                               textColor=colors.darkgreen, fontSize=12)))
-            story.append(Spacer(1, 10))
             
-            # Dados básicos
-            basic_data = [
-                ['Informação', 'Detalhes'],
-                ['CNPJ', prop['cnpj'] if prop['cnpj'] else 'Não informado'],
-                ['Endereço', prop['endereco'][:50] + '...' if len(prop['endereco']) > 50 else prop['endereco'] if prop['endereco'] else 'Não informado'],
-                ['Telefone', prop['telefone'] if prop['telefone'] else 'Não informado'],
-                ['Email', prop['email'] if prop['email'] else 'Não informado']
+            # Tabela de detalhes
+            details_data = [
+                ['Informação', 'Valor'],
+                ['CNPJ', prop['cnpj']],
+                ['Telefone', prop['telefone']],
+                ['Email', prop['email']],
+                ['Prazo de Execução', f"{prop['prazo_dias']} dias" if prop['prazo_dias'] > 0 else 'Não informado'],
+                ['Equipe Total', f"{prop['equipe_total']} pessoas" if prop['equipe_total'] > 0 else 'Não informado'],
+                ['Garantia', f"{prop['garantia_anos']} anos" if prop['garantia_anos'] > 0 else 'Não informado'],
+                ['Valor Proposto', f"R$ {prop['valor']:,.2f}" if prop['valor'] > 0 else 'Não informado'],
+                ['Score Final', f"{prop['score']:.0f}%"]
             ]
             
-            basic_table = Table(basic_data, colWidths=[1.5*inch, 4*inch])
-            basic_table.setStyle(TableStyle([
+            if prop['objeto'] != 'Não identificado':
+                details_data.insert(-1, ['Objeto', prop['objeto'][:60] + '...' if len(prop['objeto']) > 60 else prop['objeto']])
+            
+            details_table = Table(details_data, colWidths=[2*inch, 3.5*inch])
+            details_table.setStyle(TableStyle([
                 ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
                 ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
                 ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                 ('FONTSIZE', (0, 0), (-1, -1), 9),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP')
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.lightgreen)  # Destacar score
             ]))
-            story.append(basic_table)
-            story.append(Spacer(1, 15))
             
-            # Objeto do serviço
-            if prop['objeto']:
-                story.append(Paragraph("Objeto do Serviço:", styles['Heading4']))
-                story.append(Paragraph(prop['objeto'], styles['Normal']))
-                story.append(Spacer(1, 10))
-            
-            # Cronograma
-            story.append(Paragraph("Cronograma:", styles['Heading4']))
-            cronograma_text = f"• Prazo de Execução: {prop['prazo_execucao']} dias<br/>"
-            if prop['prazo_mobilizacao'] > 0:
-                cronograma_text += f"• Prazo de Mobilização: {prop['prazo_mobilizacao']} dias<br/>"
-            cronograma_text += f"• Prazo Total: {prop['prazo_total']} dias"
-            story.append(Paragraph(cronograma_text, styles['Normal']))
-            story.append(Spacer(1, 10))
-            
-            # Equipe técnica
-            story.append(Paragraph("Equipe Técnica:", styles['Heading4']))
-            equipe_text = f"• Total da Equipe: {prop['equipe_total']} pessoas<br/>"
-            if prop['engenheiros']:
-                equipe_text += "• Engenheiros:<br/>"
-                for eng in prop['engenheiros']:
-                    equipe_text += f"  - {eng['nome']} (Engenheiro {eng['especialidade']})<br/>"
-            story.append(Paragraph(equipe_text, styles['Normal']))
-            story.append(Spacer(1, 10))
-            
-            # Metodologia
-            if prop['metodologia']:
-                story.append(Paragraph("Metodologia de Execução:", styles['Heading4']))
-                metodologia_resumo = prop['metodologia'][:300] + "..." if len(prop['metodologia']) > 300 else prop['metodologia']
-                story.append(Paragraph(metodologia_resumo, styles['Normal']))
-                story.append(Spacer(1, 10))
-            
-            # Garantias
-            if prop['garantia_civil'] > 0 or prop['garantia_outros'] > 0:
-                story.append(Paragraph("Garantias:", styles['Heading4']))
-                garantias_text = ""
-                if prop['garantia_civil'] > 0:
-                    garantias_text += f"• Obras Civis: {prop['garantia_civil']} anos<br/>"
-                if prop['garantia_outros'] > 0:
-                    garantias_text += f"• Demais Serviços: {prop['garantia_outros']} anos<br/>"
-                story.append(Paragraph(garantias_text, styles['Normal']))
-                story.append(Spacer(1, 10))
-            
-            # Experiência
-            if prop['experiencia']:
-                story.append(Paragraph("Experiência/Referências:", styles['Heading4']))
-                exp_text = ""
-                for exp in prop['experiencia'][:3]:  # Mostrar apenas 3 principais
-                    exp_text += f"• {exp}<br/>"
-                story.append(Paragraph(exp_text, styles['Normal']))
-                story.append(Spacer(1, 10))
+            story.append(details_table)
+            story.append(Spacer(1, 20))
         
-        # Seção 3: Recomendações
-        story.append(PageBreak())
-        story.append(Paragraph("SEÇÃO 3: RECOMENDAÇÕES TÉCNICAS", heading_style))
+        # Recomendação
+        story.append(Paragraph("3. RECOMENDAÇÃO", heading_style))
         
         if sorted_proposals:
-            melhor_proposta = sorted_proposals[0]
-            story.append(Paragraph("Recomendação Técnica Principal:", styles['Heading4']))
-            story.append(Paragraph(f"Com base na análise técnica detalhada, recomenda-se a empresa {melhor_proposta['nome_empresa']} que obteve o melhor score técnico ({melhor_proposta['technical_score']:.1f}%).", styles['Normal']))
+            melhor = sorted_proposals[0]
+            story.append(Paragraph(f"Recomenda-se a contratação da empresa {melhor['empresa']} que obteve o melhor score geral ({melhor['score']:.0f}%).", styles['Normal']))
             story.append(Spacer(1, 10))
             
-            story.append(Paragraph("Justificativa Técnica:", styles['Heading4']))
+            # Justificativa
             justificativas = []
-            if melhor_proposta['prazo_total'] > 0:
-                justificativas.append(f"• Cronograma viável: {melhor_proposta['prazo_total']} dias")
-            if melhor_proposta['equipe_total'] > 0:
-                justificativas.append(f"• Equipe robusta: {melhor_proposta['equipe_total']} pessoas")
-            if melhor_proposta['engenheiros']:
-                justificativas.append(f"• Corpo técnico qualificado: {len(melhor_proposta['engenheiros'])} engenheiros")
+            if melhor['prazo_dias'] > 0:
+                justificativas.append(f"• Prazo adequado: {melhor['prazo_dias']} dias")
+            if melhor['equipe_total'] > 0:
+                justificativas.append(f"• Equipe dimensionada: {melhor['equipe_total']} pessoas")
+            if melhor['garantia_anos'] > 0:
+                justificativas.append(f"• Garantia oferecida: {melhor['garantia_anos']} anos")
+            if melhor['valor'] > 0:
+                justificativas.append(f"• Valor proposto: R$ {melhor['valor']:,.2f}")
             
-            for just in justificativas:
-                story.append(Paragraph(just, styles['Normal']))
-        
-        # Gerar PDF
-        doc.build(story)
-        return output_path
-    
-    def generate_commercial_report(self, proposals, output_path):
-        """Gera relatório comercial especializado"""
-        doc = SimpleDocTemplate(output_path, pagesize=A4, topMargin=0.5*inch)
-        styles = getSampleStyleSheet()
-        story = []
-        
-        # Estilos customizados
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Title'],
-            fontSize=18,
-            spaceAfter=30,
-            textColor=colors.darkgreen,
-            alignment=TA_CENTER
-        )
-        
-        heading_style = ParagraphStyle(
-            'CustomHeading',
-            parent=styles['Heading2'],
-            fontSize=14,
-            spaceAfter=12,
-            textColor=colors.darkgreen,
-            leftIndent=0
-        )
-        
-        # Título
-        story.append(Paragraph("ANÁLISE E EQUALIZAÇÃO COMERCIAL DE PROPOSTAS", title_style))
-        story.append(Paragraph("Avaliação Comercial Especializada", styles['Normal']))
-        story.append(Paragraph(f"Data de Geração: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles['Normal']))
-        story.append(Spacer(1, 20))
-        
-        # Seção 1: Ranking Comercial
-        story.append(Paragraph("SEÇÃO 1: RANKING COMERCIAL", heading_style))
-        
-        # Para relatório comercial, ordenar por menor preço (quando disponível)
-        # Por enquanto, usar score técnico como proxy
-        sorted_proposals = sorted(proposals, key=lambda x: x['technical_score'], reverse=True)
-        
-        # Tabela de ranking comercial
-        ranking_data = [['Posição', 'Empresa', 'Valor Proposto', 'Prazo', 'Garantias']]
-        for i, prop in enumerate(sorted_proposals, 1):
-            valor_str = f"R$ {prop['valor_total']:,.2f}" if prop['valor_total'] > 0 else 'A definir'
-            garantia_str = f"{prop['garantia_civil']}a/{prop['garantia_outros']}a" if prop['garantia_civil'] > 0 else 'N/I'
-            
-            ranking_data.append([
-                str(i),
-                prop['nome_empresa'][:25] if prop['nome_empresa'] else 'N/I',
-                valor_str,
-                f"{prop['prazo_total']} dias" if prop['prazo_total'] > 0 else 'N/I',
-                garantia_str
-            ])
-        
-        ranking_table = Table(ranking_data, colWidths=[0.8*inch, 2.2*inch, 1.5*inch, 1.2*inch, 1*inch])
-        ranking_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 10),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
-        story.append(ranking_table)
-        story.append(Spacer(1, 20))
-        
-        # Seção 2: Análise Comercial Detalhada
-        story.append(Paragraph("SEÇÃO 2: ANÁLISE COMERCIAL DETALHADA", heading_style))
-        
-        for i, prop in enumerate(sorted_proposals):
-            if i > 0:
-                story.append(PageBreak())
-            
-            # Nome da empresa
-            story.append(Paragraph(f"{prop['nome_empresa']}", 
-                                 ParagraphStyle('CompanyTitle', parent=styles['Heading3'], 
-                                              textColor=colors.darkgreen, fontSize=12)))
-            story.append(Spacer(1, 10))
-            
-            # Dados comerciais
-            commercial_data = [
-                ['Aspecto Comercial', 'Detalhes'],
-                ['Empresa', prop['nome_empresa'] if prop['nome_empresa'] else 'Não informado'],
-                ['CNPJ', prop['cnpj'] if prop['cnpj'] else 'Não informado'],
-                ['Endereço', prop['endereco'][:60] + '...' if len(prop['endereco']) > 60 else prop['endereco'] if prop['endereco'] else 'Não informado'],
-                ['Contato', f"{prop['telefone']} / {prop['email']}" if prop['telefone'] or prop['email'] else 'Não informado'],
-                ['Prazo Total', f"{prop['prazo_total']} dias" if prop['prazo_total'] > 0 else 'Não informado'],
-                ['Garantia Civil', f"{prop['garantia_civil']} anos" if prop['garantia_civil'] > 0 else 'Não informado'],
-                ['Garantia Serviços', f"{prop['garantia_outros']} anos" if prop['garantia_outros'] > 0 else 'Não informado']
-            ]
-            
-            commercial_table = Table(commercial_data, colWidths=[2*inch, 3.5*inch])
-            commercial_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightgreen),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP')
-            ]))
-            story.append(commercial_table)
-            story.append(Spacer(1, 15))
-            
-            # Condições comerciais
-            story.append(Paragraph("Condições Comerciais:", styles['Heading4']))
-            condicoes_text = f"• Prazo de Execução: {prop['prazo_execucao']} dias<br/>"
-            if prop['prazo_mobilizacao'] > 0:
-                condicoes_text += f"• Prazo de Mobilização: {prop['prazo_mobilizacao']} dias<br/>"
-            if prop['garantia_civil'] > 0:
-                condicoes_text += f"• Garantia para Obras Civis: {prop['garantia_civil']} anos<br/>"
-            if prop['garantia_outros'] > 0:
-                condicoes_text += f"• Garantia para Demais Serviços: {prop['garantia_outros']} anos<br/>"
-            story.append(Paragraph(condicoes_text, styles['Normal']))
-            story.append(Spacer(1, 10))
-            
-            # Capacidade técnica (relevante para avaliação comercial)
-            story.append(Paragraph("Capacidade Técnica:", styles['Heading4']))
-            capacidade_text = f"• Equipe Proposta: {prop['equipe_total']} pessoas<br/>"
-            if prop['engenheiros']:
-                capacidade_text += f"• Engenheiros: {len(prop['engenheiros'])} profissionais<br/>"
-            if prop['experiencia']:
-                capacidade_text += f"• Referências: {len(prop['experiencia'])} clientes<br/>"
-            story.append(Paragraph(capacidade_text, styles['Normal']))
-            story.append(Spacer(1, 10))
-        
-        # Seção 3: Recomendações Comerciais
-        story.append(PageBreak())
-        story.append(Paragraph("SEÇÃO 3: RECOMENDAÇÕES COMERCIAIS", heading_style))
-        
-        if sorted_proposals:
-            melhor_proposta = sorted_proposals[0]
-            story.append(Paragraph("Recomendação Comercial Principal:", styles['Heading4']))
-            story.append(Paragraph(f"Com base na análise comercial, recomenda-se a empresa {melhor_proposta['nome_empresa']} considerando o conjunto de fatores comerciais e técnicos.", styles['Normal']))
-            story.append(Spacer(1, 10))
-            
-            story.append(Paragraph("Justificativa Comercial:", styles['Heading4']))
-            justificativas = []
-            if melhor_proposta['prazo_total'] > 0:
-                justificativas.append(f"• Prazo competitivo: {melhor_proposta['prazo_total']} dias")
-            if melhor_proposta['garantia_civil'] > 0:
-                justificativas.append(f"• Garantia adequada: {melhor_proposta['garantia_civil']} anos para obras civis")
-            if melhor_proposta['experiencia']:
-                justificativas.append(f"• Experiência comprovada: {len(melhor_proposta['experiencia'])} referências")
-            
-            for just in justificativas:
-                story.append(Paragraph(just, styles['Normal']))
-            
-            story.append(Spacer(1, 15))
-            story.append(Paragraph("Próximos Passos Comerciais:", styles['Heading4']))
-            proximos_passos = [
-                "• Solicitar detalhamento da composição de custos",
-                "• Validar condições de pagamento propostas", 
-                "• Confirmar prazos de execução e garantias",
-                "• Verificar documentação fiscal e jurídica",
-                "• Negociar condições finais do contrato"
-            ]
-            
-            for passo in proximos_passos:
-                story.append(Paragraph(passo, styles['Normal']))
+            if justificativas:
+                story.append(Paragraph("Principais fatores:", styles['Heading4']))
+                for just in justificativas:
+                    story.append(Paragraph(just, styles['Normal']))
         
         # Gerar PDF
         doc.build(story)
         return output_path
 
 # Instanciar analisador
-analyzer = ProposalAnalyzer()
+analyzer = SimpleProposalAnalyzer()
 
 @app.route('/')
 def index():
@@ -659,7 +415,6 @@ def index():
 def upload_files():
     try:
         files = request.files.getlist('files')
-        report_type = request.form.get('report_type', 'technical')
         
         if not files or len(files) < 2:
             return jsonify({'error': 'É necessário enviar pelo menos 2 arquivos'}), 400
@@ -689,23 +444,21 @@ def upload_files():
         if not proposals:
             return jsonify({'error': 'Falha na análise das propostas'}), 500
         
-        # Gerar relatório baseado no tipo selecionado
-        if report_type == 'technical':
-            report_filename = f"analise_tecnica_{timestamp}.pdf"
-            report_path = os.path.join(upload_dir, report_filename)
-            analyzer.generate_technical_report(proposals, report_path)
-            logger.info(f"Relatório técnico gerado: {report_path}")
-        else:  # commercial
-            report_filename = f"analise_comercial_{timestamp}.pdf"
-            report_path = os.path.join(upload_dir, report_filename)
-            analyzer.generate_commercial_report(proposals, report_path)
-            logger.info(f"Relatório comercial gerado: {report_path}")
+        # Gerar relatório
+        report_filename = f"analise_comparativa_{timestamp}.pdf"
+        report_path = os.path.join(upload_dir, report_filename)
+        analyzer.generate_comparison_report(proposals, report_path)
+        
+        logger.info(f"Relatório gerado: {report_path}")
         
         return jsonify({
             'success': True,
             'report_url': f'/download/{report_filename}',
-            'report_type': 'Técnico' if report_type == 'technical' else 'Comercial',
-            'proposals_count': len(proposals)
+            'proposals_count': len(proposals),
+            'summary': {
+                'melhor_empresa': proposals[0]['empresa'] if proposals else 'N/A',
+                'melhor_score': proposals[0]['score'] if proposals else 0
+            }
         })
         
     except Exception as e:
@@ -724,14 +477,14 @@ def download_file(filename):
         logger.error(f"Erro no download: {e}")
         return jsonify({'error': 'Erro no download'}), 500
 
-# Template HTML atualizado para 2 relatórios
+# Template HTML simplificado
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arias Analyzer Pro - Análise de Propostas</title>
+    <title>Arias Analyzer Pro - Versão Simplificada</title>
     <style>
         * {
             margin: 0;
@@ -770,6 +523,16 @@ HTML_TEMPLATE = '''
             color: #666;
             margin-bottom: 30px;
             font-size: 1.1em;
+        }
+        
+        .version-badge {
+            background: #28a745;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+            display: inline-block;
         }
         
         .upload-area {
@@ -812,52 +575,6 @@ HTML_TEMPLATE = '''
         
         .file-input {
             display: none;
-        }
-        
-        .report-type {
-            margin: 20px 0;
-            text-align: left;
-        }
-        
-        .report-type label {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 10px;
-            display: block;
-        }
-        
-        .radio-group {
-            display: flex;
-            gap: 20px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-        
-        .radio-option {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 12px 20px;
-            border: 2px solid #ddd;
-            border-radius: 10px;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            background: white;
-        }
-        
-        .radio-option:hover {
-            border-color: #667eea;
-            background: #f8f9ff;
-        }
-        
-        .radio-option input[type="radio"]:checked + .radio-label {
-            color: #667eea;
-            font-weight: bold;
-        }
-        
-        .radio-option:has(input[type="radio"]:checked) {
-            border-color: #667eea;
-            background: #f8f9ff;
         }
         
         .analyze-btn {
@@ -979,6 +696,35 @@ HTML_TEMPLATE = '''
             display: none;
         }
         
+        .features {
+            background: #f8f9ff;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        
+        .features h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .features ul {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .features li {
+            padding: 5px 0;
+            color: #333;
+        }
+        
+        .features li:before {
+            content: "✓ ";
+            color: #28a745;
+            font-weight: bold;
+        }
+        
         @media (max-width: 768px) {
             .container {
                 padding: 20px;
@@ -988,51 +734,38 @@ HTML_TEMPLATE = '''
             .logo {
                 font-size: 2em;
             }
-            
-            .radio-group {
-                flex-direction: column;
-                align-items: center;
-            }
-            
-            .radio-option {
-                width: 100%;
-                max-width: 250px;
-                justify-content: center;
-            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="logo">📊 Arias Analyzer Pro</div>
-        <div class="subtitle">Análise Inteligente de Propostas com IA</div>
+        <div class="version-badge">Versão Simplificada</div>
+        <div class="subtitle">Sistema Funcional e Confiável</div>
+        
+        <div class="features">
+            <h3>✨ Características desta versão:</h3>
+            <ul>
+                <li>Extração confiável com PyPDF2</li>
+                <li>Análise de dados essenciais</li>
+                <li>Relatório comparativo direto</li>
+                <li>Ranking automático por score</li>
+                <li>Funciona sempre, sem falhas</li>
+            </ul>
+        </div>
         
         <div class="upload-area" onclick="document.getElementById('fileInput').click()">
             <div class="upload-icon">📁</div>
             <div class="upload-text">Clique aqui ou arraste os arquivos</div>
-            <div class="upload-hint">Aceita PDF e Excel (mínimo 2 arquivos)</div>
+            <div class="upload-hint">Aceita apenas PDF (mínimo 2 arquivos)</div>
         </div>
         
-        <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.xlsx,.xls">
+        <input type="file" id="fileInput" class="file-input" multiple accept=".pdf">
         
         <div class="file-list" id="fileList"></div>
         
-        <div class="report-type">
-            <label>Tipo de Relatório:</label>
-            <div class="radio-group">
-                <div class="radio-option">
-                    <input type="radio" id="technical" name="reportType" value="technical" checked>
-                    <label for="technical" class="radio-label">📋 Análise Técnica</label>
-                </div>
-                <div class="radio-option">
-                    <input type="radio" id="commercial" name="reportType" value="commercial">
-                    <label for="commercial" class="radio-label">💰 Análise Comercial</label>
-                </div>
-            </div>
-        </div>
-        
         <button class="analyze-btn" id="analyzeBtn" onclick="analyzeFiles()" disabled>
-            Analisar Propostas
+            Analisar e Comparar Propostas
         </button>
         
         <div class="progress-container" id="progressContainer">
@@ -1044,7 +777,7 @@ HTML_TEMPLATE = '''
         
         <div class="result-container" id="resultContainer">
             <div class="success-message" id="successMessage"></div>
-            <a href="#" class="download-btn" id="downloadBtn">📥 Baixar Relatório</a>
+            <a href="#" class="download-btn" id="downloadBtn">📥 Baixar Relatório Comparativo</a>
         </div>
         
         <div class="error-message" id="errorMessage"></div>
@@ -1082,9 +815,8 @@ HTML_TEMPLATE = '''
         
         function handleFiles(files) {
             const validFiles = files.filter(file => {
-                const validTypes = ['.pdf', '.xlsx', '.xls'];
                 const extension = '.' + file.name.split('.').pop().toLowerCase();
-                return validTypes.includes(extension);
+                return extension === '.pdf';
             });
             
             selectedFiles = validFiles;
@@ -1111,11 +843,9 @@ HTML_TEMPLATE = '''
         
         async function analyzeFiles() {
             if (selectedFiles.length < 2) {
-                showError('É necessário selecionar pelo menos 2 arquivos.');
+                showError('É necessário selecionar pelo menos 2 arquivos PDF.');
                 return;
             }
-            
-            const reportType = document.querySelector('input[name="reportType"]:checked').value;
             
             // Mostrar progresso
             document.getElementById('progressContainer').style.display = 'block';
@@ -1126,17 +856,16 @@ HTML_TEMPLATE = '''
             // Simular progresso
             let progress = 0;
             const progressInterval = setInterval(() => {
-                progress += Math.random() * 15;
+                progress += Math.random() * 20;
                 if (progress > 90) progress = 90;
-                updateProgress(progress, 'Processando arquivos...');
-            }, 500);
+                updateProgress(progress, 'Extraindo dados das propostas...');
+            }, 300);
             
             try {
                 const formData = new FormData();
                 selectedFiles.forEach(file => {
                     formData.append('files', file);
                 });
-                formData.append('report_type', reportType);
                 
                 const response = await fetch('/upload', {
                     method: 'POST',
@@ -1144,7 +873,7 @@ HTML_TEMPLATE = '''
                 });
                 
                 clearInterval(progressInterval);
-                updateProgress(100, 'Concluído!');
+                updateProgress(100, 'Análise concluída!');
                 
                 const result = await response.json();
                 
@@ -1175,8 +904,9 @@ HTML_TEMPLATE = '''
             const resultContainer = document.getElementById('resultContainer');
             
             successMessage.innerHTML = `
-                ✅ Relatório ${result.report_type} gerado com sucesso!<br>
-                📊 ${result.proposals_count} propostas analisadas
+                ✅ Análise comparativa concluída com sucesso!<br>
+                📊 ${result.proposals_count} propostas analisadas<br>
+                🏆 Melhor empresa: ${result.summary.melhor_empresa} (${result.summary.melhor_score.toFixed(0)}% score)
             `;
             
             downloadBtn.href = result.report_url;
