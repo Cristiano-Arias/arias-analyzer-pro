@@ -43,8 +43,8 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
 # Configurações Azure
-AZURE_ENDPOINT = "https://proposal-analyzer-di-novo.cognitiveservices.azure.com/"
-AZURE_KEY = "3aKBwFofr4I8LBDMWf6R6FYypzVfSXXRWD0yoBZthBd8uBDqqW9gJQQJ99BGACZoyfiXJ3w3AAALACOGBRJm"
+AZURE_ENDPOINT = "https://proposal-analyzer-eastus.cognitiveservices.azure.com/"
+AZURE_KEY = "2WSbc2H8NbocAvetZtpuqx6fhkHULpBgLyTQg2tD8BKG2E74Pm1wJQQJ99BGACYeBjFXJ3w3AAALACOGu7AE"
 
 # Criar diretório de upload se não existir
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
