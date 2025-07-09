@@ -3,6 +3,7 @@ import tempfile
 import shutil
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 
@@ -16,16 +17,17 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
 from azure.core.credentials import AzureKeyCredential
 
-# Processamento de documentos
-import pandas as pd
+# Processamento de documentos (SEM PANDAS)
 import PyPDF2
+from openpyxl import load_workbook
 
 # Geração de relatórios
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
+from reportlab.lib.units import inch, cm
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO)
@@ -40,9 +42,9 @@ ALLOWED_EXTENSIONS = {'pdf', 'xlsx', 'xls'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max
 
-# Configurações Azure (SUBSTITUA PELOS SEUS VALORES)
+# Configurações Azure
 AZURE_ENDPOINT = "https://proposal-analyzer-di.cognitiveservices.azure.com/"
-AZURE_KEY = "9DjJwSTRXOYAFs7NDZLDNsK1XSPzvOQZve6X7BidDZP1r8F4hkkwJQQJ99BGACZoyfiXJ3w3AAALACOGVe3Q"  # IMPORTANTE: Substitua pela sua chave
+AZURE_KEY = "SUA_CHAVE_AZURE_AQUI"
 
 # Criar diretório de upload se não existir
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -95,6 +97,8 @@ class AzureDocumentIntelligenceExtractor:
     def _parse_azure_result(self, result) -> Dict[str, Any]:
         """Processa resultado do Azure Document Intelligence"""
         extracted_data = {
+            'empresa': '',
+            'cnpj': '',
             'metodologia': '',
             'prazo_dias': 0,
             'equipe_total': 0,
@@ -102,6 +106,15 @@ class AzureDocumentIntelligenceExtractor:
             'materiais': [],
             'tecnologias': [],
             'cronograma': [],
+            'preco_total': 0.0,
+            'bdi_percentual': 0.0,
+            'condicoes_pagamento': '',
+            'garantia': '',
+            'composicao_custos': {
+                'mao_obra': 0.0,
+                'materiais': 0.0,
+                'equipamentos': 0.0
+            },
             'raw_text': '',
             'tabelas': [],
             'confidence_score': 0.0
@@ -147,7 +160,13 @@ class AzureDocumentIntelligenceExtractor:
         """Mapeia key-value pairs para campos específicos"""
         key_lower = key.lower()
         
-        if any(term in key_lower for term in ['metodologia', 'método', 'abordagem']):
+        if any(term in key_lower for term in ['empresa', 'razão social', 'nome']):
+            data['empresa'] = value
+        elif any(term in key_lower for term in ['cnpj', 'cpf']):
+            cnpj = re.sub(r'[^\d]', '', value)
+            if len(cnpj) >= 11:
+                data['cnpj'] = value
+        elif any(term in key_lower for term in ['metodologia', 'método', 'abordagem']):
             data['metodologia'] = value
         elif any(term in key_lower for term in ['prazo', 'cronograma', 'tempo', 'dias']):
             prazo = self._extract_number_from_text(value)
@@ -157,16 +176,47 @@ class AzureDocumentIntelligenceExtractor:
             equipe = self._extract_number_from_text(value)
             if equipe > 0:
                 data['equipe_total'] = equipe
+        elif any(term in key_lower for term in ['preço', 'valor', 'total']):
+            preco = self._extract_currency_from_text(value)
+            if preco > 0:
+                data['preco_total'] = preco
+        elif any(term in key_lower for term in ['bdi', 'benefício']):
+            bdi = self._extract_percentage_from_text(value)
+            if bdi > 0:
+                data['bdi_percentual'] = bdi
     
     def _extract_specific_patterns(self, text: str, data: Dict):
-        """Extrai padrões específicos do texto"""
-        import re
+        """Extrai padrões específicos do texto usando regex avançado"""
         
-        # Padrões para prazo
+        # Padrões para empresa
+        empresa_patterns = [
+            r'(?:Empresa|Razão Social|Nome):\s*([A-Za-z\s]+(?:Ltda|S\.A\.|EIRELI)?)',
+            r'([A-Za-z\s]+(?:Ltda|S\.A\.|EIRELI))',
+        ]
+        
+        for pattern in empresa_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches and not data['empresa']:
+                data['empresa'] = matches[0].strip()
+                break
+        
+        # Padrões para CNPJ
+        cnpj_patterns = [
+            r'CNPJ[:\s]*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})',
+            r'(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})'
+        ]
+        
+        for pattern in cnpj_patterns:
+            matches = re.findall(pattern, text)
+            if matches and not data['cnpj']:
+                data['cnpj'] = matches[0]
+                break
+        
+        # Padrões para prazo (melhorados)
         prazo_patterns = [
-            r'(\d+)\s*dias?',
-            r'prazo[:\s]*(\d+)',
-            r'cronograma[:\s]*(\d+)',
+            r'(?:prazo|cronograma|tempo)[:\s]*(\d+)\s*dias?',
+            r'(\d+)\s*dias?\s*(?:úteis|corridos)?',
+            r'(?:em|dentro de)\s*(\d+)\s*dias?',
             r'(\d+)\s*semanas?'
         ]
         
@@ -179,11 +229,11 @@ class AzureDocumentIntelligenceExtractor:
                 if prazo > data['prazo_dias']:
                     data['prazo_dias'] = prazo
         
-        # Padrões para equipe
+        # Padrões para equipe (melhorados)
         equipe_patterns = [
-            r'(\d+)\s*pessoas?',
-            r'(\d+)\s*profissionais?',
-            r'equipe[:\s]*(\d+)'
+            r'(?:equipe|pessoas|profissionais)[:\s]*(\d+)',
+            r'(\d+)\s*(?:pessoas|profissionais)',
+            r'(?:composta por|formada por)\s*(\d+)'
         ]
         
         for pattern in equipe_patterns:
@@ -193,35 +243,108 @@ class AzureDocumentIntelligenceExtractor:
                 if equipe > data['equipe_total']:
                     data['equipe_total'] = equipe
         
+        # Padrões para preço
+        preco_patterns = [
+            r'R\$\s*([\d.,]+)',
+            r'(?:valor|preço|total)[:\s]*R\$\s*([\d.,]+)',
+            r'([\d.,]+)\s*reais?'
+        ]
+        
+        for pattern in preco_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                preco_str = matches[0].replace('.', '').replace(',', '.')
+                try:
+                    preco = float(preco_str)
+                    if preco > data['preco_total']:
+                        data['preco_total'] = preco
+                except:
+                    continue
+        
+        # Padrões para BDI
+        bdi_patterns = [
+            r'BDI[:\s]*(\d+(?:,\d+)?)\s*%',
+            r'(?:benefício|lucro)[:\s]*(\d+(?:,\d+)?)\s*%'
+        ]
+        
+        for pattern in bdi_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                bdi_str = matches[0].replace(',', '.')
+                try:
+                    bdi = float(bdi_str)
+                    if bdi > data['bdi_percentual']:
+                        data['bdi_percentual'] = bdi
+                except:
+                    continue
+        
         # Extrair tecnologias
-        tech_keywords = ['SAP', 'Microsoft', 'Oracle', 'Java', 'Python', 'SQL', 'Azure', 'AWS']
+        tech_keywords = ['SAP', 'Microsoft', 'Oracle', 'Java', 'Python', 'SQL', 'Azure', 'AWS', 'Scrum', 'Kanban']
         for tech in tech_keywords:
             if tech.lower() in text.lower():
                 if tech not in data['tecnologias']:
                     data['tecnologias'].append(tech)
+        
+        # Extrair equipamentos e materiais das tabelas
+        self._extract_items_from_tables(data)
+    
+    def _extract_items_from_tables(self, data: Dict):
+        """Extrai equipamentos e materiais das tabelas"""
+        for table in data['tabelas']:
+            for cell in table:
+                content = cell['content'].lower()
+                if any(term in content for term in ['servidor', 'computador', 'notebook', 'equipamento']):
+                    if cell['content'] not in data['equipamentos']:
+                        data['equipamentos'].append(cell['content'])
+                elif any(term in content for term in ['licença', 'software', 'material']):
+                    if cell['content'] not in data['materiais']:
+                        data['materiais'].append(cell['content'])
     
     def _extract_number_from_text(self, text: str) -> int:
         """Extrai número de um texto"""
-        import re
         numbers = re.findall(r'\d+', text)
         return int(numbers[0]) if numbers else 0
+    
+    def _extract_currency_from_text(self, text: str) -> float:
+        """Extrai valor monetário de um texto"""
+        # Remove símbolos e converte para float
+        clean_text = re.sub(r'[^\d.,]', '', text)
+        clean_text = clean_text.replace('.', '').replace(',', '.')
+        try:
+            return float(clean_text)
+        except:
+            return 0.0
+    
+    def _extract_percentage_from_text(self, text: str) -> float:
+        """Extrai percentual de um texto"""
+        numbers = re.findall(r'(\d+(?:,\d+)?)', text)
+        if numbers:
+            try:
+                return float(numbers[0].replace(',', '.'))
+            except:
+                return 0.0
+        return 0.0
     
     def _calculate_confidence_score(self, data: Dict) -> float:
         """Calcula score de confiança baseado nos dados extraídos"""
         score = 0.0
-        total_fields = 6
+        total_fields = 8
         
+        if data['empresa']:
+            score += 1.0
+        if data['cnpj']:
+            score += 1.0
         if data['metodologia']:
             score += 1.0
         if data['prazo_dias'] > 0:
             score += 1.0
         if data['equipe_total'] > 0:
             score += 1.0
-        if data['equipamentos']:
+        if data['preco_total'] > 0:
+            score += 1.0
+        if data['bdi_percentual'] > 0:
             score += 1.0
         if data['tecnologias']:
-            score += 1.0
-        if data['tabelas']:
             score += 1.0
         
         return (score / total_fields) * 100
@@ -237,7 +360,10 @@ class AzureDocumentIntelligenceExtractor:
                 for page in pdf_reader.pages:
                     text += page.extract_text()
             
-            return {
+            # Aplicar padrões básicos mesmo no fallback
+            data = {
+                'empresa': '',
+                'cnpj': '',
                 'metodologia': 'Metodologia não especificada',
                 'prazo_dias': 0,
                 'equipe_total': 0,
@@ -245,13 +371,28 @@ class AzureDocumentIntelligenceExtractor:
                 'materiais': [],
                 'tecnologias': [],
                 'cronograma': [],
+                'preco_total': 0.0,
+                'bdi_percentual': 0.0,
+                'condicoes_pagamento': '',
+                'garantia': '',
+                'composicao_custos': {
+                    'mao_obra': 0.0,
+                    'materiais': 0.0,
+                    'equipamentos': 0.0
+                },
                 'raw_text': text,
                 'tabelas': [],
                 'confidence_score': 25.0
             }
+            
+            self._extract_specific_patterns(text, data)
+            return data
+            
         except Exception as e:
             logger.error(f"Erro no fallback: {str(e)}")
             return {
+                'empresa': 'Erro na extração',
+                'cnpj': '',
                 'metodologia': 'Erro na extração',
                 'prazo_dias': 0,
                 'equipe_total': 0,
@@ -259,20 +400,30 @@ class AzureDocumentIntelligenceExtractor:
                 'materiais': [],
                 'tecnologias': [],
                 'cronograma': [],
+                'preco_total': 0.0,
+                'bdi_percentual': 0.0,
+                'condicoes_pagamento': '',
+                'garantia': '',
+                'composicao_custos': {
+                    'mao_obra': 0.0,
+                    'materiais': 0.0,
+                    'equipamentos': 0.0
+                },
                 'raw_text': '',
                 'tabelas': [],
                 'confidence_score': 0.0
             }
 
 class ExcelExtractor:
-    """Extrator para arquivos Excel (método já funcional)"""
+    """Extrator para arquivos Excel SEM PANDAS - usando openpyxl"""
     
     def extract_from_excel(self, excel_path: str) -> Dict[str, Any]:
-        """Extrai dados comerciais do Excel"""
+        """Extrai dados comerciais do Excel usando openpyxl"""
         try:
-            excel_data = pd.read_excel(excel_path, sheet_name=None)
+            workbook = load_workbook(excel_path, read_only=True)
             
             extracted_data = {
+                'empresa': '',
                 'cnpj': '',
                 'preco_total': 0.0,
                 'bdi_percentual': 0.0,
@@ -285,661 +436,790 @@ class ExcelExtractor:
                 }
             }
             
-            for sheet_name, df in excel_data.items():
-                if 'comercial' in sheet_name.lower() or 'proposta' in sheet_name.lower():
-                    self._extract_commercial_data(df, extracted_data)
-                elif 'custo' in sheet_name.lower() or 'composição' in sheet_name.lower():
-                    self._extract_cost_composition(df, extracted_data)
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                
+                if any(term in sheet_name.lower() for term in ['comercial', 'proposta']):
+                    self._extract_commercial_data(sheet, extracted_data)
+                elif any(term in sheet_name.lower() for term in ['custo', 'composição']):
+                    self._extract_cost_composition(sheet, extracted_data)
             
+            workbook.close()
             return extracted_data
             
         except Exception as e:
             logger.error(f"Erro ao extrair dados do Excel: {str(e)}")
             return {}
     
-    def _extract_commercial_data(self, df: pd.DataFrame, data: Dict):
+    def _extract_commercial_data(self, sheet, data: Dict):
         """Extrai dados comerciais da planilha"""
-        for index, row in df.iterrows():
-            for col in df.columns:
-                cell_value = str(row[col]).strip()
-                
-                if 'cnpj' in str(col).lower() and cell_value:
-                    data['cnpj'] = cell_value
-                elif any(term in str(col).lower() for term in ['preço', 'valor', 'total']):
-                    price = self._parse_price_brazilian(cell_value)
-                    if price > 0:
-                        data['preco_total'] = price
-                elif 'bdi' in str(col).lower():
-                    bdi = self._extract_percentage(cell_value)
-                    if bdi > 0:
-                        data['bdi_percentual'] = bdi
-    
-    def _extract_cost_composition(self, df: pd.DataFrame, data: Dict):
-        """Extrai composição de custos"""
-        for index, row in df.iterrows():
-            for col in df.columns:
-                cell_value = str(row[col]).strip()
-                col_name = str(col).lower()
-                
-                if 'mão de obra' in col_name or 'mao_obra' in col_name:
-                    price = self._parse_price_brazilian(cell_value)
-                    if price > 0:
-                        data['composicao_custos']['mao_obra'] = price
-                elif 'material' in col_name:
-                    price = self._parse_price_brazilian(cell_value)
-                    if price > 0:
-                        data['composicao_custos']['materiais'] = price
-                elif 'equipamento' in col_name:
-                    price = self._parse_price_brazilian(cell_value)
-                    if price > 0:
-                        data['composicao_custos']['equipamentos'] = price
-    
-    def _parse_price_brazilian(self, price_str: str) -> float:
-        """Converte string de preço brasileiro para float (CORRIGIDO)"""
-        if not price_str or price_str in ['nan', 'None', '']:
-            return 0.0
-        
-        try:
-            price_clean = str(price_str).replace('R$', '').replace('$', '').strip()
-            price_clean = price_clean.replace(' ', '')
+        for row in sheet.iter_rows(values_only=True):
+            if not row or not any(row):
+                continue
             
-            # Se tem vírgula, é separador decimal brasileiro
-            if ',' in price_clean:
-                parts = price_clean.split(',')
-                if len(parts) == 2:
-                    # Remover pontos da parte inteira
-                    parte_inteira = parts[0].replace('.', '')
-                    parte_decimal = parts[1]
-                    price_final = f"{parte_inteira}.{parte_decimal}"
+            row_text = ' '.join(str(cell) for cell in row if cell is not None).lower()
+            
+            # Buscar CNPJ
+            cnpj_match = re.search(r'(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})', row_text)
+            if cnpj_match and not data['cnpj']:
+                data['cnpj'] = cnpj_match.group(1)
+            
+            # Buscar preço total
+            if any(term in row_text for term in ['total', 'preço', 'valor']):
+                for cell in row:
+                    if isinstance(cell, (int, float)) and cell > 1000:
+                        data['preco_total'] = float(cell)
+                    elif isinstance(cell, str) and 'R$' in str(cell):
+                        price_match = re.search(r'R\$\s*([\d.,]+)', str(cell))
+                        if price_match:
+                            price_str = price_match.group(1).replace('.', '').replace(',', '.')
+                            try:
+                                data['preco_total'] = float(price_str)
+                            except:
+                                pass
+            
+            # Buscar BDI
+            if 'bdi' in row_text:
+                for cell in row:
+                    if isinstance(cell, (int, float)) and 0 < cell < 100:
+                        data['bdi_percentual'] = float(cell)
+    
+    def _extract_cost_composition(self, sheet, data: Dict):
+        """Extrai composição de custos da planilha"""
+        for row in sheet.iter_rows(values_only=True):
+            if not row or not any(row):
+                continue
+            
+            row_text = ' '.join(str(cell) for cell in row if cell is not None).lower()
+            
+            # Buscar valores por categoria
+            value = None
+            for cell in row:
+                if isinstance(cell, (int, float)) and cell > 0:
+                    value = float(cell)
+                    break
+            
+            if value:
+                if any(term in row_text for term in ['mão de obra', 'mao de obra', 'pessoal']):
+                    data['composicao_custos']['mao_obra'] = value
+                elif any(term in row_text for term in ['material', 'insumo']):
+                    data['composicao_custos']['materiais'] = value
+                elif any(term in row_text for term in ['equipamento', 'hardware']):
+                    data['composicao_custos']['equipamentos'] = value
+
+
+
+class ProposalAnalyzer:
+    """Analisador de propostas SEM PANDAS - usando estruturas Python nativas"""
+    
+    def __init__(self):
+        self.azure_extractor = AzureDocumentIntelligenceExtractor(AZURE_ENDPOINT, AZURE_KEY)
+        self.excel_extractor = ExcelExtractor()
+    
+    def analyze_proposals(self, files: List[Dict]) -> Dict[str, Any]:
+        """Analisa múltiplas propostas e gera comparação"""
+        proposals = []
+        
+        for file_info in files:
+            file_path = file_info['path']
+            file_type = file_info['type']
+            
+            try:
+                if file_type == 'pdf':
+                    data = self.azure_extractor.extract_from_pdf(file_path)
+                elif file_type in ['xlsx', 'xls']:
+                    data = self.excel_extractor.extract_from_excel(file_path)
                 else:
-                    price_final = price_clean.replace(',', '.')
-            else:
-                # Se só tem pontos, pode ser separador de milhares ou decimal
-                if price_clean.count('.') == 1:
-                    parts = price_clean.split('.')
-                    if len(parts[1]) <= 2:
-                        price_final = price_clean  # É decimal
-                    else:
-                        price_final = price_clean.replace('.', '')  # É separador de milhares
-                else:
-                    price_final = price_clean.replace('.', '')
-            
-            return float(price_final)
-            
-        except (ValueError, AttributeError) as e:
-            logger.warning(f"Erro ao converter preço '{price_str}': {str(e)}")
-            return 0.0
-    
-    def _extract_percentage(self, text: str) -> float:
-        """Extrai percentual de um texto"""
-        import re
-        
-        patterns = [
-            r'(\d+[,.]?\d*)\s*%',
-            r'(\d+[,.]?\d*)\s*por\s*cento'
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, str(text), re.IGNORECASE)
-            if matches:
-                try:
-                    value = float(matches[0].replace(',', '.'))
-                    return value
-                except ValueError:
                     continue
+                
+                # Adicionar informações do arquivo
+                data['filename'] = file_info['filename']
+                data['file_type'] = file_type
+                proposals.append(data)
+                
+            except Exception as e:
+                logger.error(f"Erro ao processar {file_info['filename']}: {str(e)}")
+                continue
         
-        return 0.0
+        if not proposals:
+            raise ValueError("Nenhuma proposta válida foi processada")
+        
+        # Consolidar dados (mesclar PDF + Excel da mesma empresa)
+        consolidated_proposals = self._consolidate_proposals(proposals)
+        
+        # Calcular scores técnicos
+        self._calculate_technical_scores(consolidated_proposals)
+        
+        # Ordenar por ranking
+        consolidated_proposals.sort(key=lambda x: x.get('score_tecnico', 0), reverse=True)
+        
+        return {
+            'proposals': consolidated_proposals,
+            'summary': self._generate_summary(consolidated_proposals),
+            'analysis_date': datetime.now().strftime('%d/%m/%Y às %H:%M')
+        }
+    
+    def _consolidate_proposals(self, proposals: List[Dict]) -> List[Dict]:
+        """Consolida dados de PDF e Excel da mesma empresa"""
+        consolidated = {}
+        
+        for proposal in proposals:
+            empresa = proposal.get('empresa', '').strip()
+            
+            # Tentar identificar empresa por CNPJ se nome não estiver disponível
+            if not empresa:
+                cnpj = proposal.get('cnpj', '')
+                if cnpj:
+                    empresa = f"Empresa {cnpj[:8]}"
+                else:
+                    empresa = f"Empresa {len(consolidated) + 1}"
+            
+            if empresa not in consolidated:
+                consolidated[empresa] = {
+                    'empresa': empresa,
+                    'cnpj': '',
+                    'metodologia': '',
+                    'prazo_dias': 0,
+                    'equipe_total': 0,
+                    'equipamentos': [],
+                    'materiais': [],
+                    'tecnologias': [],
+                    'preco_total': 0.0,
+                    'bdi_percentual': 0.0,
+                    'condicoes_pagamento': '',
+                    'garantia': '',
+                    'composicao_custos': {
+                        'mao_obra': 0.0,
+                        'materiais': 0.0,
+                        'equipamentos': 0.0
+                    },
+                    'confidence_score': 0.0,
+                    'score_tecnico': 0.0,
+                    'files_processed': []
+                }
+            
+            # Mesclar dados
+            current = consolidated[empresa]
+            
+            # Atualizar campos se não estiverem preenchidos ou se o novo valor for melhor
+            if proposal.get('cnpj') and not current['cnpj']:
+                current['cnpj'] = proposal['cnpj']
+            
+            if proposal.get('metodologia') and not current['metodologia']:
+                current['metodologia'] = proposal['metodologia']
+            
+            if proposal.get('prazo_dias', 0) > current['prazo_dias']:
+                current['prazo_dias'] = proposal['prazo_dias']
+            
+            if proposal.get('equipe_total', 0) > current['equipe_total']:
+                current['equipe_total'] = proposal['equipe_total']
+            
+            if proposal.get('preco_total', 0) > current['preco_total']:
+                current['preco_total'] = proposal['preco_total']
+            
+            if proposal.get('bdi_percentual', 0) > current['bdi_percentual']:
+                current['bdi_percentual'] = proposal['bdi_percentual']
+            
+            # Mesclar listas
+            for item in proposal.get('equipamentos', []):
+                if item not in current['equipamentos']:
+                    current['equipamentos'].append(item)
+            
+            for item in proposal.get('materiais', []):
+                if item not in current['materiais']:
+                    current['materiais'].append(item)
+            
+            for item in proposal.get('tecnologias', []):
+                if item not in current['tecnologias']:
+                    current['tecnologias'].append(item)
+            
+            # Atualizar composição de custos
+            for key, value in proposal.get('composicao_custos', {}).items():
+                if value > current['composicao_custos'].get(key, 0):
+                    current['composicao_custos'][key] = value
+            
+            # Atualizar confidence score (usar o maior)
+            if proposal.get('confidence_score', 0) > current['confidence_score']:
+                current['confidence_score'] = proposal['confidence_score']
+            
+            # Adicionar arquivo processado
+            current['files_processed'].append(proposal.get('filename', 'unknown'))
+        
+        return list(consolidated.values())
+    
+    def _calculate_technical_scores(self, proposals: List[Dict]):
+        """Calcula scores técnicos baseado nos dados extraídos"""
+        for proposal in proposals:
+            score = 0.0
+            max_score = 100.0
+            
+            # Metodologia (25 pontos)
+            if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada':
+                metodologia_score = 25.0
+                # Bonus para metodologias ágeis
+                if any(term in proposal['metodologia'].lower() for term in ['scrum', 'kanban', 'ágil', 'agile']):
+                    metodologia_score = 25.0
+                elif any(term in proposal['metodologia'].lower() for term in ['cascata', 'waterfall']):
+                    metodologia_score = 15.0
+                else:
+                    metodologia_score = 20.0
+                score += metodologia_score
+            
+            # Prazo (20 pontos)
+            if proposal['prazo_dias'] > 0:
+                if proposal['prazo_dias'] <= 90:
+                    score += 20.0  # Prazo excelente
+                elif proposal['prazo_dias'] <= 120:
+                    score += 15.0  # Prazo bom
+                elif proposal['prazo_dias'] <= 150:
+                    score += 10.0  # Prazo aceitável
+                else:
+                    score += 5.0   # Prazo ruim
+            
+            # Equipe (20 pontos)
+            if proposal['equipe_total'] > 0:
+                if proposal['equipe_total'] >= 8:
+                    score += 20.0  # Equipe robusta
+                elif proposal['equipe_total'] >= 5:
+                    score += 15.0  # Equipe adequada
+                elif proposal['equipe_total'] >= 3:
+                    score += 10.0  # Equipe mínima
+                else:
+                    score += 5.0   # Equipe insuficiente
+            
+            # Recursos técnicos (15 pontos)
+            recursos_score = 0
+            if proposal['equipamentos']:
+                recursos_score += 7.5
+            if proposal['materiais']:
+                recursos_score += 7.5
+            score += recursos_score
+            
+            # Tecnologias (10 pontos)
+            if proposal['tecnologias']:
+                tech_score = min(len(proposal['tecnologias']) * 2, 10)
+                score += tech_score
+            
+            # Completude dos dados (10 pontos)
+            completude_score = (proposal['confidence_score'] / 100) * 10
+            score += completude_score
+            
+            proposal['score_tecnico'] = round(score, 1)
+    
+    def _generate_summary(self, proposals: List[Dict]) -> Dict[str, Any]:
+        """Gera resumo da análise"""
+        if not proposals:
+            return {}
+        
+        # Encontrar melhor e pior proposta
+        best_technical = max(proposals, key=lambda x: x['score_tecnico'])
+        best_price = min([p for p in proposals if p['preco_total'] > 0], 
+                        key=lambda x: x['preco_total'], default=None)
+        
+        # Calcular estatísticas
+        precos = [p['preco_total'] for p in proposals if p['preco_total'] > 0]
+        prazos = [p['prazo_dias'] for p in proposals if p['prazo_dias'] > 0]
+        
+        return {
+            'total_proposals': len(proposals),
+            'best_technical': best_technical['empresa'] if best_technical else '',
+            'best_price': best_price['empresa'] if best_price else '',
+            'price_range': {
+                'min': min(precos) if precos else 0,
+                'max': max(precos) if precos else 0,
+                'avg': sum(precos) / len(precos) if precos else 0
+            },
+            'deadline_range': {
+                'min': min(prazos) if prazos else 0,
+                'max': max(prazos) if prazos else 0,
+                'avg': sum(prazos) / len(prazos) if prazos else 0
+            }
+        }
 
 class ReportGenerator:
-    """Gerador de relatórios aprimorado"""
+    """Gerador de relatórios com formatação visual profissional"""
     
-    def generate_comparison_report(self, empresas_data: Dict[str, Any], output_path: str):
-        """Gera relatório de comparação completo"""
-        doc = SimpleDocTemplate(output_path, pagesize=letter)
-        styles = getSampleStyleSheet()
-        story = []
-        
-        # Título
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=18,
+    def __init__(self):
+        self.styles = getSampleStyleSheet()
+        self._setup_custom_styles()
+    
+    def _setup_custom_styles(self):
+        """Configura estilos personalizados para o relatório"""
+        # Título principal
+        self.styles.add(ParagraphStyle(
+            name='CustomTitle',
+            parent=self.styles['Title'],
+            fontSize=24,
             spaceAfter=30,
-            alignment=1  # Center
+            alignment=TA_CENTER,
+            textColor=colors.darkblue,
+            fontName='Helvetica-Bold'
+        ))
+        
+        # Subtítulo
+        self.styles.add(ParagraphStyle(
+            name='CustomSubtitle',
+            parent=self.styles['Heading1'],
+            fontSize=16,
+            spaceAfter=20,
+            spaceBefore=20,
+            textColor=colors.darkblue,
+            fontName='Helvetica-Bold'
+        ))
+        
+        # Cabeçalho de seção
+        self.styles.add(ParagraphStyle(
+            name='SectionHeader',
+            parent=self.styles['Heading2'],
+            fontSize=14,
+            spaceAfter=15,
+            spaceBefore=15,
+            textColor=colors.darkgreen,
+            fontName='Helvetica-Bold',
+            borderWidth=1,
+            borderColor=colors.darkgreen,
+            borderPadding=5
+        ))
+        
+        # Texto normal melhorado
+        self.styles.add(ParagraphStyle(
+            name='CustomNormal',
+            parent=self.styles['Normal'],
+            fontSize=11,
+            spaceAfter=10,
+            fontName='Helvetica'
+        ))
+    
+    def generate_report(self, analysis_result: Dict[str, Any], output_path: str):
+        """Gera relatório PDF com formatação profissional"""
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=A4,
+            rightMargin=2*cm,
+            leftMargin=2*cm,
+            topMargin=2*cm,
+            bottomMargin=2*cm
         )
         
-        story.append(Paragraph("ANÁLISE COMPARATIVA DE PROPOSTAS", title_style))
-        story.append(Paragraph(f"Gerado em: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles['Normal']))
+        story = []
+        
+        # Cabeçalho do relatório
+        self._add_header(story, analysis_result)
+        
+        # Bloco 1: Resumo do TR
+        self._add_tr_summary(story)
+        
+        # Bloco 2: Equalização Técnica
+        self._add_technical_analysis(story, analysis_result['proposals'])
+        
+        # Bloco 3: Equalização Comercial
+        self._add_commercial_analysis(story, analysis_result['proposals'])
+        
+        # Bloco 4: Conclusão
+        self._add_conclusion(story, analysis_result)
+        
+        doc.build(story)
+        logger.info(f"Relatório gerado: {output_path}")
+    
+    def _add_header(self, story: List, analysis_result: Dict):
+        """Adiciona cabeçalho profissional"""
+        # Título principal
+        title = Paragraph("ANÁLISE COMPARATIVA DE PROPOSTAS", self.styles['CustomTitle'])
+        story.append(title)
+        
+        # Data de geração
+        date_text = f"<b>Data de Geração:</b> {analysis_result['analysis_date']}"
+        date_para = Paragraph(date_text, self.styles['CustomNormal'])
+        story.append(date_para)
+        
+        # Linha separadora
         story.append(Spacer(1, 20))
+        story.append(self._create_separator_line())
+        story.append(Spacer(1, 20))
+    
+    def _add_tr_summary(self, story: List):
+        """Adiciona resumo do Termo de Referência"""
+        # Título da seção
+        section_title = Paragraph("📋 BLOCO 1: RESUMO DO TERMO DE REFERÊNCIA", self.styles['SectionHeader'])
+        story.append(section_title)
         
-        # Bloco 1: Resumo Executivo
-        story.append(Paragraph("1. RESUMO EXECUTIVO", styles['Heading2']))
+        # Objeto
+        story.append(Paragraph("<b>Objeto</b>", self.styles['CustomSubtitle']))
+        story.append(Paragraph("Sistema de Gestão Empresarial", self.styles['CustomNormal']))
         
-        resumo_data = []
-        resumo_data.append(['Empresa', 'Score Técnico', 'Score Comercial', 'Preço Total', 'Prazo'])
+        # Especificações técnicas
+        story.append(Paragraph("<b>Especificações Técnicas Exigidas</b>", self.styles['CustomSubtitle']))
+        specs = [
+            "• Sistema integrado de gestão",
+            "• Módulos: Financeiro, Estoque, Vendas, Compras",
+            "• Interface web responsiva",
+            "• Banco de dados robusto",
+            "• Relatórios gerenciais"
+        ]
+        for spec in specs:
+            story.append(Paragraph(spec, self.styles['CustomNormal']))
         
-        for empresa, dados in empresas_data.items():
-            score_tecnico = self._calculate_technical_score(dados.get('dados_tecnicos', {}))
-            score_comercial = self._calculate_commercial_score(dados.get('dados_comerciais', {}))
-            preco = dados.get('dados_comerciais', {}).get('preco_total', 0)
-            prazo = dados.get('dados_tecnicos', {}).get('prazo_dias', 0)
+        # Metodologia exigida
+        story.append(Paragraph("<b>Metodologia Exigida pelo TR</b>", self.styles['CustomSubtitle']))
+        metodologia = [
+            "• Metodologia ágil ou híbrida",
+            "• Fases bem definidas: Análise, Desenvolvimento, Testes, Implantação",
+            "• Documentação técnica completa",
+            "• Treinamento da equipe"
+        ]
+        for item in metodologia:
+            story.append(Paragraph(item, self.styles['CustomNormal']))
+        
+        # Prazos e critérios
+        story.append(Paragraph("<b>Prazos e Critérios</b>", self.styles['CustomSubtitle']))
+        story.append(Paragraph("• <b>Prazo máximo:</b> 120 dias", self.styles['CustomNormal']))
+        story.append(Paragraph("• <b>Critérios de avaliação:</b> Técnica (70%) + Preço (30%)", self.styles['CustomNormal']))
+        
+        story.append(self._create_separator_line())
+    
+    def _add_technical_analysis(self, story: List, proposals: List[Dict]):
+        """Adiciona análise técnica detalhada"""
+        # Título da seção
+        section_title = Paragraph("🔧 BLOCO 2: EQUALIZAÇÃO DAS PROPOSTAS TÉCNICAS", self.styles['SectionHeader'])
+        story.append(section_title)
+        
+        # Matriz de comparação técnica
+        story.append(Paragraph("📊 Matriz de Comparação Técnica", self.styles['CustomSubtitle']))
+        
+        # Criar tabela de comparação
+        table_data = [['Empresa', 'Metodologia', 'Prazo', 'Equipe', 'Equipamentos', 'Materiais', 'Score Total']]
+        
+        for proposal in proposals:
+            metodologia_check = "✓" if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada' else "✗"
+            prazo_check = "✓" if proposal['prazo_dias'] > 0 and proposal['prazo_dias'] <= 120 else "✗"
+            equipe_check = "✓" if proposal['equipe_total'] >= 5 else "✗"
+            equipamentos_check = "✓" if proposal['equipamentos'] else "✗"
+            materiais_check = "✓" if proposal['materiais'] else "✗"
             
-            resumo_data.append([
-                empresa,
-                f"{score_tecnico:.1f}%",
-                f"{score_comercial:.1f}%",
-                f"R$ {preco:,.2f}",
-                f"{prazo} dias"
+            table_data.append([
+                f"<b>{proposal['empresa']}</b>",
+                metodologia_check,
+                prazo_check,
+                equipe_check,
+                equipamentos_check,
+                materiais_check,
+                f"<b>{proposal['score_tecnico']:.1f}%</b>"
             ])
         
-        resumo_table = Table(resumo_data)
-        resumo_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
-        ]))
-        
-        story.append(resumo_table)
-        story.append(Spacer(1, 20))
-        
-        # Bloco 2: Análise Técnica Detalhada
-        story.append(Paragraph("2. ANÁLISE TÉCNICA DETALHADA", styles['Heading2']))
-        
-        for empresa, dados in empresas_data.items():
-            story.append(Paragraph(f"2.{list(empresas_data.keys()).index(empresa) + 1} {empresa}", styles['Heading3']))
-            
-            dados_tecnicos = dados.get('dados_tecnicos', {})
-            
-            # Metodologia
-            metodologia = dados_tecnicos.get('metodologia', 'Não especificada')
-            story.append(Paragraph(f"<b>Metodologia:</b> {metodologia}", styles['Normal']))
-            
-            # Prazo
-            prazo = dados_tecnicos.get('prazo_dias', 0)
-            story.append(Paragraph(f"<b>Prazo:</b> {prazo} dias", styles['Normal']))
-            
-            # Equipe
-            equipe = dados_tecnicos.get('equipe_total', 0)
-            story.append(Paragraph(f"<b>Equipe:</b> {equipe} pessoas", styles['Normal']))
-            
-            # Tecnologias
-            tecnologias = dados_tecnicos.get('tecnologias', [])
-            if tecnologias:
-                story.append(Paragraph(f"<b>Tecnologias:</b> {', '.join(tecnologias)}", styles['Normal']))
-            
-            # Score técnico
-            score_tecnico = self._calculate_technical_score(dados_tecnicos)
-            story.append(Paragraph(f"<b>Score Técnico:</b> {score_tecnico:.1f}%", styles['Normal']))
-            
-            # Confiança Azure
-            confidence = dados_tecnicos.get('confidence_score', 0)
-            story.append(Paragraph(f"<b>Confiança da Extração:</b> {confidence:.1f}%", styles['Normal']))
-            
-            story.append(Spacer(1, 15))
-        
-        # Bloco 3: Análise Comercial
-        story.append(Paragraph("3. ANÁLISE COMERCIAL", styles['Heading2']))
-        
-        comercial_data = []
-        comercial_data.append(['Empresa', 'Preço Total', 'BDI (%)', 'Mão de Obra', 'Materiais', 'Equipamentos'])
-        
-        for empresa, dados in empresas_data.items():
-            dados_comerciais = dados.get('dados_comerciais', {})
-            preco = dados_comerciais.get('preco_total', 0)
-            bdi = dados_comerciais.get('bdi_percentual', 0)
-            composicao = dados_comerciais.get('composicao_custos', {})
-            
-            comercial_data.append([
-                empresa,
-                f"R$ {preco:,.2f}",
-                f"{bdi:.2f}%",
-                f"R$ {composicao.get('mao_obra', 0):,.2f}",
-                f"R$ {composicao.get('materiais', 0):,.2f}",
-                f"R$ {composicao.get('equipamentos', 0):,.2f}"
-            ])
-        
-        comercial_table = Table(comercial_data)
-        comercial_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        table = Table(table_data, colWidths=[3*cm, 2*cm, 1.5*cm, 1.5*cm, 2*cm, 2*cm, 2*cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, 0), 10),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
         ]))
         
-        story.append(comercial_table)
+        story.append(table)
         story.append(Spacer(1, 20))
         
-        # Bloco 4: Recomendação
-        story.append(Paragraph("4. RECOMENDAÇÃO", styles['Heading2']))
+        # Ranking técnico
+        story.append(Paragraph("🏆 Ranking Técnico Final", self.styles['CustomSubtitle']))
         
-        # Encontrar melhor proposta
-        melhor_empresa = self._find_best_proposal(empresas_data)
+        for i, proposal in enumerate(proposals, 1):
+            ranking_text = f"{i}. <b>🏢 {proposal['empresa']}</b> - {proposal['score_tecnico']:.1f}%"
+            story.append(Paragraph(ranking_text, self.styles['CustomNormal']))
         
-        story.append(Paragraph(f"<b>Proposta Recomendada:</b> {melhor_empresa}", styles['Normal']))
-        story.append(Paragraph("Esta recomendação é baseada na análise combinada dos critérios técnicos e comerciais.", styles['Normal']))
+        story.append(Spacer(1, 20))
         
-        # Construir documento
-        doc.build(story)
-        logger.info(f"Relatório gerado: {output_path}")
+        # Análise detalhada por empresa
+        story.append(Paragraph("📋 Análise Detalhada por Empresa", self.styles['CustomSubtitle']))
+        
+        for proposal in proposals:
+            self._add_company_technical_details(story, proposal)
+        
+        story.append(self._create_separator_line())
     
-    def _calculate_technical_score(self, dados_tecnicos: Dict[str, Any]) -> float:
-        """Calcula score técnico"""
-        score = 0.0
-        max_score = 8.0
+    def _add_company_technical_details(self, story: List, proposal: Dict):
+        """Adiciona detalhes técnicos de uma empresa"""
+        # Nome da empresa
+        company_title = f"🏢 {proposal['empresa']}"
+        story.append(Paragraph(company_title, self.styles['CustomSubtitle']))
         
-        if dados_tecnicos.get('metodologia') and dados_tecnicos['metodologia'] != 'Metodologia não especificada':
-            score += 1.0
-        if dados_tecnicos.get('prazo_dias', 0) > 0:
-            score += 1.0
-        if dados_tecnicos.get('equipe_total', 0) > 0:
-            score += 1.0
-        if dados_tecnicos.get('equipamentos'):
-            score += 1.0
-        if dados_tecnicos.get('materiais'):
-            score += 1.0
-        if dados_tecnicos.get('tecnologias'):
-            score += 1.0
-        if dados_tecnicos.get('cronograma'):
-            score += 1.0
+        # Metodologia
+        story.append(Paragraph("📋 Metodologia:", self.styles['CustomNormal']))
+        metodologia = proposal['metodologia'] if proposal['metodologia'] else "Não informada"
+        story.append(Paragraph(f"• <b>Descrição:</b> {metodologia}", self.styles['CustomNormal']))
         
-        confidence = dados_tecnicos.get('confidence_score', 0.0)
-        if confidence > 70:
-            score += 1.0
-        elif confidence > 50:
-            score += 0.5
+        aderencia = "✓ Boa" if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada' else "✗ Não informada"
+        story.append(Paragraph(f"• <b>Aderência ao TR:</b> {aderencia}", self.styles['CustomNormal']))
         
-        return (score / max_score) * 100
+        # Cronograma
+        story.append(Paragraph("⏰ Cronograma:", self.styles['CustomNormal']))
+        prazo = proposal['prazo_dias'] if proposal['prazo_dias'] > 0 else "Não informado"
+        story.append(Paragraph(f"• <b>Prazo Total:</b> {prazo} dias", self.styles['CustomNormal']))
+        
+        viabilidade = "✓ Dentro do prazo" if proposal['prazo_dias'] > 0 and proposal['prazo_dias'] <= 120 else "✗ Fora do prazo ou não informado"
+        story.append(Paragraph(f"• <b>Viabilidade:</b> {viabilidade}", self.styles['CustomNormal']))
+        
+        # Equipe técnica
+        story.append(Paragraph("👥 Equipe Técnica:", self.styles['CustomNormal']))
+        equipe = proposal['equipe_total'] if proposal['equipe_total'] > 0 else "Não informada"
+        story.append(Paragraph(f"• <b>Total:</b> {equipe} pessoas", self.styles['CustomNormal']))
+        
+        status_equipe = "✓ Adequada" if proposal['equipe_total'] >= 5 else "✗ Insuficiente ou não informada"
+        story.append(Paragraph(f"• <b>Status:</b> {status_equipe}", self.styles['CustomNormal']))
+        
+        # Recursos técnicos
+        story.append(Paragraph("🔧 Recursos Técnicos:", self.styles['CustomNormal']))
+        equipamentos_count = len(proposal['equipamentos'])
+        materiais_count = len(proposal['materiais'])
+        story.append(Paragraph(f"• <b>Equipamentos:</b> {equipamentos_count} itens listados", self.styles['CustomNormal']))
+        story.append(Paragraph(f"• <b>Materiais:</b> {materiais_count} itens listados", self.styles['CustomNormal']))
+        
+        # Pontos fortes
+        pontos_fortes = []
+        if proposal['metodologia'] and proposal['metodologia'] != 'Metodologia não especificada':
+            pontos_fortes.append("Metodologia bem definida")
+        if proposal['prazo_dias'] > 0 and proposal['prazo_dias'] <= 90:
+            pontos_fortes.append("Prazo otimizado")
+        if proposal['equipe_total'] >= 8:
+            pontos_fortes.append("Equipe robusta")
+        if proposal['tecnologias']:
+            pontos_fortes.append("Tecnologias modernas")
+        
+        if pontos_fortes:
+            story.append(Paragraph("✅ Pontos Fortes:", self.styles['CustomNormal']))
+            for ponto in pontos_fortes:
+                story.append(Paragraph(f"• {ponto}", self.styles['CustomNormal']))
+        
+        # Gaps e riscos
+        gaps = []
+        if not proposal['metodologia'] or proposal['metodologia'] == 'Metodologia não especificada':
+            gaps.append("Metodologia não especificada")
+        if proposal['prazo_dias'] == 0:
+            gaps.append("Prazo não informado")
+        if proposal['equipe_total'] == 0:
+            gaps.append("Equipe não detalhada")
+        if not proposal['equipamentos']:
+            gaps.append("Equipamentos não listados")
+        
+        if gaps:
+            story.append(Paragraph("⚠️ Gaps e Riscos:", self.styles['CustomNormal']))
+            for gap in gaps:
+                story.append(Paragraph(f"• {gap}", self.styles['CustomNormal']))
+        
+        story.append(Spacer(1, 15))
     
-    def _calculate_commercial_score(self, dados_comerciais: Dict[str, Any]) -> float:
-        """Calcula score comercial"""
-        score = 0.0
-        max_score = 6.0
+    def _add_commercial_analysis(self, story: List, proposals: List[Dict]):
+        """Adiciona análise comercial"""
+        # Título da seção
+        section_title = Paragraph("💰 BLOCO 3: EQUALIZAÇÃO DAS PROPOSTAS COMERCIAIS", self.styles['SectionHeader'])
+        story.append(section_title)
         
-        if dados_comerciais.get('cnpj'):
-            score += 1.0
-        if dados_comerciais.get('preco_total', 0) > 0:
-            score += 1.0
-        if dados_comerciais.get('bdi_percentual', 0) > 0:
-            score += 1.0
-        if dados_comerciais.get('condicoes_pagamento'):
-            score += 1.0
-        if dados_comerciais.get('garantia'):
-            score += 1.0
+        # Filtrar propostas com preço
+        proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+        proposals_with_price.sort(key=lambda x: x['preco_total'])
         
-        composicao = dados_comerciais.get('composicao_custos', {})
-        if any(composicao.get(key, 0) > 0 for key in ['mao_obra', 'materiais', 'equipamentos']):
-            score += 1.0
+        if not proposals_with_price:
+            story.append(Paragraph("⚠️ Nenhuma proposta com informações comerciais válidas foi encontrada.", self.styles['CustomNormal']))
+            return
         
-        return (score / max_score) * 100
-    
-    def _find_best_proposal(self, empresas_data: Dict[str, Any]) -> str:
-        """Encontra a melhor proposta baseada em critérios combinados"""
-        best_empresa = ""
-        best_score = 0.0
+        # Ranking de preços
+        story.append(Paragraph("💵 Ranking de Preços", self.styles['CustomSubtitle']))
         
-        for empresa, dados in empresas_data.items():
-            score_tecnico = self._calculate_technical_score(dados.get('dados_tecnicos', {}))
-            score_comercial = self._calculate_commercial_score(dados.get('dados_comerciais', {}))
+        # Tabela de ranking
+        table_data = [['Posição', 'Empresa', 'Preço Total', 'Diferença', 'Status']]
+        
+        base_price = proposals_with_price[0]['preco_total']
+        
+        for i, proposal in enumerate(proposals_with_price, 1):
+            if i == 1:
+                diferenca = "Base"
+                status = "🏆 Melhor Preço"
+            else:
+                diferenca_valor = proposal['preco_total'] - base_price
+                diferenca_perc = ((proposal['preco_total'] / base_price) - 1) * 100
+                diferenca = f"+R$ {diferenca_valor:,.2f}"
+                status = f"📈 {diferenca_perc:.0f}% mais caro"
             
-            # Score combinado (60% técnico + 40% comercial)
-            score_combinado = (score_tecnico * 0.6) + (score_comercial * 0.4)
-            
-            if score_combinado > best_score:
-                best_score = score_combinado
-                best_empresa = empresa
+            table_data.append([
+                f"<b>{i}º</b>",
+                proposal['empresa'],
+                f"<b>R$ {proposal['preco_total']:,.2f}</b>",
+                diferenca,
+                status
+            ])
         
-        return best_empresa
+        table = Table(table_data, colWidths=[2*cm, 4*cm, 3*cm, 3*cm, 3*cm])
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightgreen),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+        ]))
+        
+        story.append(table)
+        story.append(Spacer(1, 20))
+        
+        # Análise comercial detalhada
+        story.append(Paragraph("📊 Análise Comercial Detalhada", self.styles['CustomSubtitle']))
+        
+        for proposal in proposals_with_price:
+            self._add_company_commercial_details(story, proposal)
+        
+        story.append(self._create_separator_line())
+    
+    def _add_company_commercial_details(self, story: List, proposal: Dict):
+        """Adiciona detalhes comerciais de uma empresa"""
+        # Nome da empresa
+        company_title = f"🏢 {proposal['empresa']}"
+        story.append(Paragraph(company_title, self.styles['CustomSubtitle']))
+        
+        # Informações comerciais
+        story.append(Paragraph("💼 Informações Comerciais:", self.styles['CustomNormal']))
+        
+        cnpj = proposal['cnpj'] if proposal['cnpj'] else "Não informado"
+        story.append(Paragraph(f"• <b>CNPJ:</b> {cnpj}", self.styles['CustomNormal']))
+        story.append(Paragraph(f"• <b>Preço Total:</b> R$ {proposal['preco_total']:,.2f}", self.styles['CustomNormal']))
+        
+        if proposal['bdi_percentual'] > 0:
+            story.append(Paragraph(f"• <b>BDI:</b> {proposal['bdi_percentual']:.2f}%", self.styles['CustomNormal']))
+        
+        # Composição de custos
+        if any(proposal['composicao_custos'].values()):
+            story.append(Paragraph("💰 Composição de Custos:", self.styles['CustomNormal']))
+            story.append(Paragraph(f"• <b>Mão de Obra:</b> R$ {proposal['composicao_custos']['mao_obra']:,.2f}", self.styles['CustomNormal']))
+            story.append(Paragraph(f"• <b>Materiais:</b> R$ {proposal['composicao_custos']['materiais']:,.2f}", self.styles['CustomNormal']))
+            story.append(Paragraph(f"• <b>Equipamentos:</b> R$ {proposal['composicao_custos']['equipamentos']:,.2f}", self.styles['CustomNormal']))
+        
+        story.append(Spacer(1, 15))
+    
+    def _add_conclusion(self, story: List, analysis_result: Dict):
+        """Adiciona conclusão e recomendações"""
+        # Título da seção
+        section_title = Paragraph("🎯 BLOCO 4: CONCLUSÃO E RECOMENDAÇÕES", self.styles['SectionHeader'])
+        story.append(section_title)
+        
+        proposals = analysis_result['proposals']
+        summary = analysis_result['summary']
+        
+        # Síntese técnica e comercial
+        story.append(Paragraph("📋 Síntese Técnica e Comercial", self.styles['CustomSubtitle']))
+        
+        if proposals:
+            best_technical = proposals[0]  # Já ordenado por score técnico
+            proposals_with_price = [p for p in proposals if p['preco_total'] > 0]
+            
+            if proposals_with_price:
+                best_price = min(proposals_with_price, key=lambda x: x['preco_total'])
+                
+                story.append(Paragraph(f"• <b>Melhor Proposta Técnica:</b> {best_technical['empresa']} ({best_technical['score_tecnico']:.1f}%)", self.styles['CustomNormal']))
+                story.append(Paragraph(f"• <b>Melhor Proposta Comercial:</b> {best_price['empresa']} (R$ {best_price['preco_total']:,.2f})", self.styles['CustomNormal']))
+                
+                # Recomendação principal
+                story.append(Paragraph("🏆 Recomendação Principal", self.styles['CustomSubtitle']))
+                
+                if best_technical['empresa'] == best_price['empresa']:
+                    story.append(Paragraph(f"A empresa <b>{best_technical['empresa']}</b> apresenta a melhor proposta tanto técnica quanto comercial, sendo a recomendação unânime para contratação.", self.styles['CustomNormal']))
+                else:
+                    # Análise custo-benefício
+                    if best_technical['preco_total'] > 0:
+                        price_diff = ((best_technical['preco_total'] / best_price['preco_total']) - 1) * 100
+                        score_diff = best_technical['score_tecnico'] - best_price.get('score_tecnico', 0)
+                        
+                        if price_diff <= 20 and score_diff >= 10:
+                            story.append(Paragraph(f"Recomenda-se a contratação da <b>{best_technical['empresa']}</b>, pois oferece qualidade técnica superior ({score_diff:.1f} pontos a mais) com diferença de preço aceitável ({price_diff:.1f}%).", self.styles['CustomNormal']))
+                        else:
+                            story.append(Paragraph(f"Recomenda-se análise detalhada entre <b>{best_technical['empresa']}</b> (melhor técnica) e <b>{best_price['empresa']}</b> (melhor preço) considerando os critérios de avaliação 70% técnica + 30% preço.", self.styles['CustomNormal']))
+                    else:
+                        story.append(Paragraph(f"Recomenda-se a <b>{best_price['empresa']}</b> pela melhor proposta comercial, mas sugere-se negociação para melhorias técnicas.", self.styles['CustomNormal']))
+        
+        # Ações específicas
+        story.append(Paragraph("📝 Ações Específicas Recomendadas", self.styles['CustomSubtitle']))
+        actions = [
+            "• Solicitar esclarecimentos sobre metodologia às empresas que não especificaram",
+            "• Validar disponibilidade da equipe técnica proposta",
+            "• Negociar prazos mais agressivos quando possível",
+            "• Confirmar garantias e condições de pagamento",
+            "• Realizar reunião técnica com as empresas finalistas"
+        ]
+        
+        for action in actions:
+            story.append(Paragraph(action, self.styles['CustomNormal']))
+        
+        # Resumo executivo final
+        if summary:
+            story.append(Paragraph("📊 Resumo Executivo", self.styles['CustomSubtitle']))
+            
+            # Tabela resumo
+            table_data = [['Métrica', 'Valor']]
+            table_data.append(['Total de Propostas Analisadas', str(summary.get('total_proposals', 0))])
+            
+            if summary.get('price_range', {}).get('min', 0) > 0:
+                table_data.append(['Menor Preço', f"R$ {summary['price_range']['min']:,.2f}"])
+                table_data.append(['Maior Preço', f"R$ {summary['price_range']['max']:,.2f}"])
+                table_data.append(['Preço Médio', f"R$ {summary['price_range']['avg']:,.2f}"])
+            
+            if summary.get('deadline_range', {}).get('min', 0) > 0:
+                table_data.append(['Menor Prazo', f"{summary['deadline_range']['min']} dias"])
+                table_data.append(['Maior Prazo', f"{summary['deadline_range']['max']} dias"])
+            
+            table = Table(table_data, colWidths=[8*cm, 4*cm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.navy),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTSIZE', (0, 1), (-1, -1), 9)
+            ]))
+            
+            story.append(table)
+    
+    def _create_separator_line(self):
+        """Cria linha separadora"""
+        return Table([['---']], colWidths=[15*cm], style=TableStyle([
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTSIZE', (0, 0), (-1, -1), 14),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.grey)
+        ]))
 
-# Inicializar extractors
-azure_extractor = AzureDocumentIntelligenceExtractor(AZURE_ENDPOINT, AZURE_KEY)
-excel_extractor = ExcelExtractor()
+# Instanciar analisador e gerador
+analyzer = ProposalAnalyzer()
 report_generator = ReportGenerator()
 
 def allowed_file(filename):
+    """Verifica se o arquivo tem extensão permitida"""
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def extract_company_name(filename):
-    """Extrai nome da empresa do arquivo"""
-    filename = filename.lower()
-    if 'techsolutions' in filename:
-        return 'TechSolutions Ltda.'
-    elif 'innovasoft' in filename:
-        return 'InnovaSoft S.A.'
-    else:
-        return filename.split('.')[0].replace('_', ' ').title()
-
-# Template HTML atualizado
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arias Analyzer Pro - Azure AI</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
-        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
-        .header { text-align: center; color: white; margin-bottom: 30px; }
-        .header h1 { font-size: 2.5em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
-        .header p { font-size: 1.2em; opacity: 0.9; }
-        .azure-badge { background: #0078d4; color: white; padding: 5px 15px; border-radius: 20px; font-size: 0.9em; margin-top: 10px; display: inline-block; }
-        .upload-section { background: white; border-radius: 15px; padding: 30px; margin-bottom: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
-        .upload-area { border: 3px dashed #667eea; border-radius: 10px; padding: 40px; text-align: center; margin-bottom: 20px; transition: all 0.3s ease; }
-        .upload-area:hover { border-color: #764ba2; background: #f8f9ff; }
-        .upload-area.dragover { border-color: #4CAF50; background: #e8f5e8; }
-        .file-input { display: none; }
-        .upload-btn { background: linear-gradient(45deg, #667eea, #764ba2); color: white; border: none; padding: 15px 30px; border-radius: 25px; cursor: pointer; font-size: 16px; transition: all 0.3s ease; }
-        .upload-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
-        .file-list { margin-top: 20px; }
-        .file-item { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 15px; margin-bottom: 10px; display: flex; justify-content: between; align-items: center; }
-        .file-info { flex-grow: 1; }
-        .file-name { font-weight: bold; color: #333; }
-        .file-size { color: #666; font-size: 0.9em; }
-        .file-type { background: #667eea; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; margin-left: 10px; }
-        .remove-btn { background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 5px; cursor: pointer; margin-left: 10px; }
-        .analyze-btn { background: linear-gradient(45deg, #28a745, #20c997); color: white; border: none; padding: 15px 40px; border-radius: 25px; cursor: pointer; font-size: 18px; font-weight: bold; width: 100%; margin-top: 20px; transition: all 0.3s ease; }
-        .analyze-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
-        .analyze-btn:disabled { background: #6c757d; cursor: not-allowed; transform: none; }
-        .progress { background: #e9ecef; border-radius: 10px; height: 20px; margin: 20px 0; overflow: hidden; display: none; }
-        .progress-bar { background: linear-gradient(45deg, #28a745, #20c997); height: 100%; width: 0%; transition: width 0.3s ease; text-align: center; line-height: 20px; color: white; font-size: 12px; }
-        .results { background: white; border-radius: 15px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); display: none; }
-        .status { padding: 15px; border-radius: 8px; margin: 10px 0; }
-        .status.success { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
-        .status.error { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
-        .status.info { background: #d1ecf1; border: 1px solid #bee5eb; color: #0c5460; }
-        .download-btn { background: linear-gradient(45deg, #17a2b8, #138496); color: white; border: none; padding: 12px 25px; border-radius: 20px; cursor: pointer; text-decoration: none; display: inline-block; margin: 10px 5px; transition: all 0.3s ease; }
-        .download-btn:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.2); color: white; text-decoration: none; }
-        .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .feature { background: rgba(255,255,255,0.1); border-radius: 10px; padding: 20px; color: white; text-align: center; }
-        .feature h3 { margin-bottom: 10px; color: #fff; }
-        .feature p { opacity: 0.9; }
-        @media (max-width: 768px) { .container { padding: 10px; } .header h1 { font-size: 2em; } .features { grid-template-columns: 1fr; } }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🚀 Arias Analyzer Pro</h1>
-            <p>Análise Inteligente de Propostas com Azure AI</p>
-            <div class="azure-badge">🤖 Powered by Azure Document Intelligence</div>
-        </div>
-
-        <div class="features">
-            <div class="feature">
-                <h3>🎯 Extração Precisa</h3>
-                <p>Azure AI extrai dados de PDFs complexos com 95%+ de precisão</p>
-            </div>
-            <div class="feature">
-                <h3>📊 Análise Completa</h3>
-                <p>Comparação técnica e comercial detalhada entre propostas</p>
-            </div>
-            <div class="feature">
-                <h3>📄 Relatórios Profissionais</h3>
-                <p>Documentos estruturados prontos para tomada de decisão</p>
-            </div>
-        </div>
-
-        <div class="upload-section">
-            <h2>📁 Upload de Documentos</h2>
-            <div class="upload-area" id="uploadArea">
-                <p>🎯 Arraste e solte seus arquivos aqui ou clique para selecionar</p>
-                <p style="margin-top: 10px; color: #666;">Suporte: PDF (propostas técnicas) e Excel (propostas comerciais)</p>
-                <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
-                    📂 Selecionar Arquivos
-                </button>
-                <input type="file" id="fileInput" class="file-input" multiple accept=".pdf,.xlsx,.xls">
-            </div>
-            
-            <div class="file-list" id="fileList"></div>
-            
-            <button class="analyze-btn" id="analyzeBtn" onclick="analyzeDocuments()" disabled>
-                🔍 Analisar Documentos com Azure AI
-            </button>
-            
-            <div class="progress" id="progress">
-                <div class="progress-bar" id="progressBar">0%</div>
-            </div>
-        </div>
-
-        <div class="results" id="results">
-            <h2>📊 Resultados da Análise</h2>
-            <div id="analysisResults"></div>
-        </div>
-    </div>
-
-    <script>
-        let selectedFiles = [];
-
-        // Configurar drag and drop
-        const uploadArea = document.getElementById('uploadArea');
-        const fileInput = document.getElementById('fileInput');
-        const fileList = document.getElementById('fileList');
-        const analyzeBtn = document.getElementById('analyzeBtn');
-
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
-
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            handleFiles(e.dataTransfer.files);
-        });
-
-        fileInput.addEventListener('change', (e) => {
-            handleFiles(e.target.files);
-        });
-
-        function handleFiles(files) {
-            for (let file of files) {
-                if (isValidFile(file)) {
-                    selectedFiles.push(file);
-                }
-            }
-            updateFileList();
-            updateAnalyzeButton();
-        }
-
-        function isValidFile(file) {
-            const validTypes = ['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel'];
-            return validTypes.includes(file.type);
-        }
-
-        function updateFileList() {
-            fileList.innerHTML = '';
-            selectedFiles.forEach((file, index) => {
-                const fileItem = document.createElement('div');
-                fileItem.className = 'file-item';
-                fileItem.innerHTML = `
-                    <div class="file-info">
-                        <div class="file-name">${file.name}</div>
-                        <div class="file-size">${formatFileSize(file.size)}</div>
-                    </div>
-                    <span class="file-type">${getFileType(file)}</span>
-                    <button class="remove-btn" onclick="removeFile(${index})">❌</button>
-                `;
-                fileList.appendChild(fileItem);
-            });
-        }
-
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-
-        function getFileType(file) {
-            if (file.type.includes('pdf')) return 'PDF';
-            if (file.type.includes('sheet') || file.type.includes('excel')) return 'Excel';
-            return 'Outro';
-        }
-
-        function removeFile(index) {
-            selectedFiles.splice(index, 1);
-            updateFileList();
-            updateAnalyzeButton();
-        }
-
-        function updateAnalyzeButton() {
-            analyzeBtn.disabled = selectedFiles.length === 0;
-        }
-
-        async function analyzeDocuments() {
-            if (selectedFiles.length === 0) return;
-
-            const formData = new FormData();
-            selectedFiles.forEach(file => {
-                formData.append('files', file);
-            });
-
-            // Mostrar progresso
-            document.getElementById('progress').style.display = 'block';
-            const progressBar = document.getElementById('progressBar');
-            analyzeBtn.disabled = true;
-            analyzeBtn.textContent = '🔄 Processando com Azure AI...';
-
-            // Simular progresso
-            let progress = 0;
-            const progressInterval = setInterval(() => {
-                progress += Math.random() * 15;
-                if (progress > 90) progress = 90;
-                progressBar.style.width = progress + '%';
-                progressBar.textContent = Math.round(progress) + '%';
-            }, 500);
-
-            try {
-                const response = await fetch('/analyze', {
-                    method: 'POST',
-                    body: formData
-                });
-
-                clearInterval(progressInterval);
-                progressBar.style.width = '100%';
-                progressBar.textContent = '100%';
-
-                const result = await response.json();
-
-                if (result.success) {
-                    showResults(result);
-                } else {
-                    showError(result.error || 'Erro desconhecido');
-                }
-            } catch (error) {
-                clearInterval(progressInterval);
-                showError('Erro de conexão: ' + error.message);
-            } finally {
-                analyzeBtn.disabled = false;
-                analyzeBtn.textContent = '🔍 Analisar Documentos com Azure AI';
-                setTimeout(() => {
-                    document.getElementById('progress').style.display = 'none';
-                    progressBar.style.width = '0%';
-                }, 2000);
-            }
-        }
-
-        function showResults(result) {
-            const resultsDiv = document.getElementById('results');
-            const analysisResults = document.getElementById('analysisResults');
-            
-            let html = '<div class="status success">✅ Análise concluída com sucesso!</div>';
-            
-            if (result.empresas && Object.keys(result.empresas).length > 0) {
-                html += '<h3>📊 Resumo das Empresas Analisadas:</h3>';
-                
-                for (const [empresa, dados] of Object.entries(result.empresas)) {
-                    const dadosTecnicos = dados.dados_tecnicos || {};
-                    const dadosComerciais = dados.dados_comerciais || {};
-                    
-                    html += `
-                        <div style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin: 10px 0; background: #f8f9fa;">
-                            <h4 style="color: #333; margin-bottom: 10px;">🏢 ${empresa}</h4>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                                <div>
-                                    <strong>📋 Dados Técnicos:</strong><br>
-                                    • Metodologia: ${dadosTecnicos.metodologia || 'Não especificada'}<br>
-                                    • Prazo: ${dadosTecnicos.prazo_dias || 0} dias<br>
-                                    • Equipe: ${dadosTecnicos.equipe_total || 0} pessoas<br>
-                                    • Confiança Azure: ${(dadosTecnicos.confidence_score || 0).toFixed(1)}%
-                                </div>
-                                <div>
-                                    <strong>💰 Dados Comerciais:</strong><br>
-                                    • Preço: R$ ${(dadosComerciais.preco_total || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}<br>
-                                    • BDI: ${(dadosComerciais.bdi_percentual || 0).toFixed(2)}%<br>
-                                    • CNPJ: ${dadosComerciais.cnpj || 'Não informado'}
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                }
-            }
-            
-            if (result.report_path) {
-                html += `
-                    <div style="text-align: center; margin-top: 20px;">
-                        <a href="/download/${result.report_path}" class="download-btn">
-                            📄 Baixar Relatório Completo
-                        </a>
-                    </div>
-                `;
-            }
-            
-            analysisResults.innerHTML = html;
-            resultsDiv.style.display = 'block';
-            resultsDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-
-        function showError(message) {
-            const resultsDiv = document.getElementById('results');
-            const analysisResults = document.getElementById('analysisResults');
-            
-            analysisResults.innerHTML = `
-                <div class="status error">
-                    ❌ Erro na análise: ${message}
-                </div>
-            `;
-            
-            resultsDiv.style.display = 'block';
-            resultsDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-    </script>
-</body>
-</html>
-"""
 
 @app.route('/')
 def index():
+    """Página principal"""
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
+@app.route('/upload', methods=['POST'])
+def upload_files():
+    """Endpoint para upload e processamento de arquivos"""
     try:
         if 'files' not in request.files:
-            return jsonify({'success': False, 'error': 'Nenhum arquivo enviado'})
+            return jsonify({'error': 'Nenhum arquivo enviado'}), 400
         
         files = request.files.getlist('files')
-        if not files or all(f.filename == '' for f in files):
-            return jsonify({'success': False, 'error': 'Nenhum arquivo selecionado'})
         
-        # Salvar arquivos
-        pdf_files = []
-        excel_files = []
+        if not files or all(file.filename == '' for file in files):
+            return jsonify({'error': 'Nenhum arquivo selecionado'}), 400
+        
+        uploaded_files = []
         
         for file in files:
             if file and allowed_file(file.filename):
@@ -947,85 +1227,515 @@ def analyze():
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 filename = f"{timestamp}_{filename}"
                 filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                
                 file.save(filepath)
                 
-                if filename.lower().endswith('.pdf'):
-                    pdf_files.append(filepath)
-                elif filename.lower().endswith(('.xlsx', '.xls')):
-                    excel_files.append(filepath)
+                file_extension = filename.rsplit('.', 1)[1].lower()
+                uploaded_files.append({
+                    'filename': filename,
+                    'path': filepath,
+                    'type': 'pdf' if file_extension == 'pdf' else file_extension
+                })
         
-        # Processar documentos
-        empresas_data = {}
+        if not uploaded_files:
+            return jsonify({'error': 'Nenhum arquivo válido foi enviado'}), 400
         
-        # Processar PDFs com Azure
-        for pdf_file in pdf_files:
-            empresa_name = extract_company_name(os.path.basename(pdf_file))
-            logger.info(f"Processando PDF: {empresa_name}")
-            
-            pdf_data = azure_extractor.extract_from_pdf(pdf_file)
-            
-            if empresa_name not in empresas_data:
-                empresas_data[empresa_name] = {}
-            
-            empresas_data[empresa_name]['dados_tecnicos'] = pdf_data
-        
-        # Processar Excel
-        for excel_file in excel_files:
-            empresa_name = extract_company_name(os.path.basename(excel_file))
-            logger.info(f"Processando Excel: {empresa_name}")
-            
-            excel_data = excel_extractor.extract_from_excel(excel_file)
-            
-            if empresa_name not in empresas_data:
-                empresas_data[empresa_name] = {}
-            
-            empresas_data[empresa_name]['dados_comerciais'] = excel_data
+        # Processar arquivos
+        logger.info(f"Processando {len(uploaded_files)} arquivos")
+        analysis_result = analyzer.analyze_proposals(uploaded_files)
         
         # Gerar relatório
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        report_filename = f"analise_comparativa_{timestamp}.pdf"
+        report_filename = f'analise_comparativa_{timestamp}.pdf'
         report_path = os.path.join(app.config['UPLOAD_FOLDER'], report_filename)
         
-        report_generator.generate_comparison_report(empresas_data, report_path)
+        report_generator.generate_report(analysis_result, report_path)
         
         # Limpar arquivos temporários
-        for file_path in pdf_files + excel_files:
+        for file_info in uploaded_files:
             try:
-                os.remove(file_path)
+                os.remove(file_info['path'])
             except:
                 pass
         
         return jsonify({
             'success': True,
-            'empresas': empresas_data,
-            'report_path': report_filename,
-            'message': 'Análise concluída com sucesso!'
+            'message': 'Análise concluída com sucesso!',
+            'report_url': f'/download/{report_filename}',
+            'summary': analysis_result['summary']
         })
         
     except Exception as e:
-        logger.error(f"Erro na análise: {str(e)}")
-        return jsonify({'success': False, 'error': str(e)})
+        logger.error(f"Erro no processamento: {str(e)}")
+        return jsonify({'error': f'Erro no processamento: {str(e)}'}), 500
 
 @app.route('/download/<filename>')
 def download_file(filename):
+    """Endpoint para download do relatório"""
     try:
-        return send_file(
-            os.path.join(app.config['UPLOAD_FOLDER'], filename),
-            as_attachment=True,
-            download_name=filename
-        )
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        if os.path.exists(file_path):
+            return send_file(file_path, as_attachment=True)
+        else:
+            return jsonify({'error': 'Arquivo não encontrado'}), 404
     except Exception as e:
         logger.error(f"Erro no download: {str(e)}")
-        return jsonify({'error': 'Arquivo não encontrado'}), 404
+        return jsonify({'error': 'Erro no download'}), 500
+
+# Template HTML (mesmo da versão anterior)
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analisador de Propostas - Azure AI</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .upload-area {
+            border: 3px dashed #4facfe;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            background: #f8f9ff;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .upload-area:hover {
+            border-color: #00f2fe;
+            background: #f0f8ff;
+        }
+        
+        .upload-area.dragover {
+            border-color: #00f2fe;
+            background: #e6f3ff;
+            transform: scale(1.02);
+        }
+        
+        .upload-icon {
+            font-size: 4em;
+            color: #4facfe;
+            margin-bottom: 20px;
+        }
+        
+        .upload-text {
+            font-size: 1.3em;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .upload-subtext {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        #fileInput {
+            display: none;
+        }
+        
+        .file-list {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            display: none;
+        }
+        
+        .file-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: white;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .file-icon {
+            font-size: 1.5em;
+            margin-right: 15px;
+            color: #4facfe;
+        }
+        
+        .file-info {
+            flex: 1;
+        }
+        
+        .file-name {
+            font-weight: 500;
+            color: #333;
+        }
+        
+        .file-size {
+            font-size: 0.8em;
+            color: #666;
+        }
+        
+        .analyze-btn {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 1.1em;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+            width: 100%;
+        }
+        
+        .analyze-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(79, 172, 254, 0.3);
+        }
+        
+        .analyze-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+        
+        .progress {
+            display: none;
+            margin-top: 20px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4facfe, #00f2fe);
+            width: 0%;
+            transition: width 0.3s ease;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+        
+        .progress-text {
+            text-align: center;
+            margin-top: 10px;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .result {
+            display: none;
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+        
+        .result.success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .result.error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        
+        .download-btn {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 15px;
+            transition: all 0.3s ease;
+        }
+        
+        .download-btn:hover {
+            background: #218838;
+            transform: translateY(-2px);
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+        
+        .feature {
+            text-align: center;
+            padding: 20px;
+            background: #f8f9ff;
+            border-radius: 15px;
+        }
+        
+        .feature-icon {
+            font-size: 2.5em;
+            color: #4facfe;
+            margin-bottom: 15px;
+        }
+        
+        .feature h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .feature p {
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .azure-badge {
+            background: #0078d4;
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            display: inline-block;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Analisador de Propostas</h1>
+            <p>Análise inteligente com Azure Document Intelligence</p>
+            <div class="azure-badge">Powered by Azure AI</div>
+        </div>
+        
+        <div class="content">
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-icon">📁</div>
+                <div class="upload-text">Clique aqui ou arraste seus arquivos</div>
+                <div class="upload-subtext">Suporte para PDF, Excel (.xlsx, .xls) - Máximo 50MB</div>
+            </div>
+            
+            <input type="file" id="fileInput" multiple accept=".pdf,.xlsx,.xls">
+            
+            <div class="file-list" id="fileList"></div>
+            
+            <button class="analyze-btn" id="analyzeBtn" onclick="analyzeFiles()" disabled>
+                🔍 Analisar Propostas
+            </button>
+            
+            <div class="progress" id="progress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text" id="progressText">Processando arquivos...</div>
+            </div>
+            
+            <div class="result" id="result"></div>
+            
+            <div class="features">
+                <div class="feature">
+                    <div class="feature-icon">🤖</div>
+                    <h3>Azure AI</h3>
+                    <p>Extração inteligente de dados usando Azure Document Intelligence</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">📊</div>
+                    <h3>Análise Completa</h3>
+                    <p>Comparação técnica e comercial detalhada das propostas</p>
+                </div>
+                <div class="feature">
+                    <div class="feature-icon">📋</div>
+                    <h3>Relatório Profissional</h3>
+                    <p>Documento PDF formatado pronto para apresentação</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFiles = [];
+        
+        // Configurar drag and drop
+        const uploadArea = document.querySelector('.upload-area');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const analyzeBtn = document.getElementById('analyzeBtn');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            handleFiles(e.dataTransfer.files);
+        });
+        
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(e.target.files);
+        });
+        
+        function handleFiles(files) {
+            selectedFiles = Array.from(files);
+            displayFiles();
+            analyzeBtn.disabled = selectedFiles.length === 0;
+        }
+        
+        function displayFiles() {
+            if (selectedFiles.length === 0) {
+                fileList.style.display = 'none';
+                return;
+            }
+            
+            fileList.style.display = 'block';
+            fileList.innerHTML = '<h3>📁 Arquivos Selecionados:</h3>';
+            
+            selectedFiles.forEach((file, index) => {
+                const fileItem = document.createElement('div');
+                fileItem.className = 'file-item';
+                
+                const icon = file.type.includes('pdf') ? '📄' : '📊';
+                const size = (file.size / 1024 / 1024).toFixed(2);
+                
+                fileItem.innerHTML = `
+                    <div class="file-icon">${icon}</div>
+                    <div class="file-info">
+                        <div class="file-name">${file.name}</div>
+                        <div class="file-size">${size} MB</div>
+                    </div>
+                `;
+                
+                fileList.appendChild(fileItem);
+            });
+        }
+        
+        async function analyzeFiles() {
+            if (selectedFiles.length === 0) return;
+            
+            const formData = new FormData();
+            selectedFiles.forEach(file => {
+                formData.append('files', file);
+            });
+            
+            // Mostrar progresso
+            document.getElementById('progress').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+            analyzeBtn.disabled = true;
+            
+            // Simular progresso
+            let progress = 0;
+            const progressInterval = setInterval(() => {
+                progress += Math.random() * 15;
+                if (progress > 90) progress = 90;
+                document.getElementById('progressFill').style.width = progress + '%';
+            }, 500);
+            
+            try {
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                clearInterval(progressInterval);
+                document.getElementById('progressFill').style.width = '100%';
+                
+                setTimeout(() => {
+                    document.getElementById('progress').style.display = 'none';
+                    showResult(result, response.ok);
+                    analyzeBtn.disabled = false;
+                }, 1000);
+                
+            } catch (error) {
+                clearInterval(progressInterval);
+                document.getElementById('progress').style.display = 'none';
+                showResult({error: 'Erro de conexão: ' + error.message}, false);
+                analyzeBtn.disabled = false;
+            }
+        }
+        
+        function showResult(result, success) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'result ' + (success ? 'success' : 'error');
+            
+            if (success) {
+                resultDiv.innerHTML = `
+                    <h3>✅ Análise Concluída!</h3>
+                    <p>${result.message}</p>
+                    <a href="${result.report_url}" class="download-btn">📥 Baixar Relatório PDF</a>
+                `;
+            } else {
+                resultDiv.innerHTML = `
+                    <h3>❌ Erro na Análise</h3>
+                    <p>${result.error}</p>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>
+'''
 
 if __name__ == '__main__':
-    # IMPORTANTE: Substitua as configurações Azure antes de executar
-    if AZURE_KEY == "SUA_CHAVE_AZURE_AQUI":
-        print("⚠️  ATENÇÃO: Configure suas credenciais Azure antes de executar!")
-        print("   Edite as variáveis AZURE_ENDPOINT e AZURE_KEY no código")
-    else:
-        print("🚀 Arias Analyzer Pro com Azure AI iniciado!")
-        print("   Acesse: http://localhost:5000")
-    
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
