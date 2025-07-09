@@ -20,58 +20,74 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class SimpleProposalAnalyzer:
+class ProposalComparator:
     def __init__(self):
         pass
     
     def extract_text_from_pdf(self, file_path):
-        """Extrai texto do PDF usando PyPDF2"""
+        """Extrai texto do PDF com timeout e tratamento de erro"""
         try:
             text = ""
             with open(file_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text += page.extract_text() + "\n"
+                
+                # Limitar a 10 páginas para evitar timeout
+                max_pages = min(len(pdf_reader.pages), 10)
+                
+                for i in range(max_pages):
+                    try:
+                        page_text = pdf_reader.pages[i].extract_text()
+                        text += page_text + "\n"
+                    except Exception as e:
+                        logger.warning(f"Erro na página {i}: {e}")
+                        continue
+                        
             return text
         except Exception as e:
-            logger.error(f"Erro na extração: {e}")
+            logger.error(f"Erro na extração do PDF: {e}")
             return ""
     
-    def extract_basic_data(self, text, filename):
-        """Extrai dados básicos da proposta"""
+    def extract_proposal_data(self, text, filename):
+        """Extrai dados básicos da proposta de forma robusta"""
         data = {
             'arquivo': filename,
             'empresa': 'Não identificado',
             'cnpj': 'Não informado',
-            'prazo_dias': 0,
-            'valor': 0.0,
-            'equipe_total': 0,
-            'garantia_anos': 0,
+            'prazo': 'Não informado',
+            'valor': 'Não informado',
+            'equipe': 'Não informado',
+            'garantia': 'Não informado',
             'telefone': 'Não informado',
             'email': 'Não informado',
-            'objeto': 'Não identificado'
+            'endereco': 'Não informado',
+            'observacoes': []
         }
         
-        # Extrair nome da empresa (primeira linha em maiúscula ou com palavras-chave)
+        # Limpar texto
+        text = text.replace('\n', ' ').replace('\r', ' ')
+        text = ' '.join(text.split())  # Remover espaços extras
+        
+        # Extrair nome da empresa (múltiplos padrões)
         empresa_patterns = [
-            r'^([A-ZÁÊÇÕ\s&-]+(?:LTDA|S\.A\.|EIRELI|ME|EPP|ENGENHARIA|CONSTRUÇÃO|PROJETOS))',
-            r'([A-Z][A-Za-z\s&-]+(?:LTDA|ENGENHARIA|CONSTRUÇÃO|PROJETOS)[A-Za-z\s&-]*)',
-            r'EMPRESA[:\s]*([^\n]+)',
-            r'RAZÃO SOCIAL[:\s]*([^\n]+)'
+            r'(?:EMPRESA|RAZÃO SOCIAL|PROPONENTE)[:\s]*([A-Z][A-Za-z\s&\-\.]+(?:LTDA|S\.?A\.?|EIRELI|ME|EPP|ENGENHARIA|CONSTRUÇÃO|PROJETOS|CONSULTORIA)[A-Za-z\s&\-\.]*)',
+            r'^([A-Z][A-Za-z\s&\-\.]+(?:LTDA|S\.?A\.?|EIRELI|ME|EPP|ENGENHARIA|CONSTRUÇÃO|PROJETOS|CONSULTORIA)[A-Za-z\s&\-\.]*)',
+            r'([A-Z]{2,}[A-Za-z\s&\-\.]*(?:LTDA|S\.?A\.?|EIRELI|ME|EPP|ENGENHARIA|CONSTRUÇÃO|PROJETOS|CONSULTORIA)[A-Za-z\s&\-\.]*)'
         ]
         
         for pattern in empresa_patterns:
-            match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
-            if match:
-                empresa = match.group(1).strip()
-                if len(empresa) > 5:  # Filtrar nomes muito curtos
-                    data['empresa'] = empresa[:50]  # Limitar tamanho
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                empresa = match.strip()
+                if len(empresa) > 5 and len(empresa) < 80:
+                    data['empresa'] = empresa
                     break
+            if data['empresa'] != 'Não identificado':
+                break
         
         # Extrair CNPJ
         cnpj_patterns = [
-            r'CNPJ[:\s]*(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})',
-            r'(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2})'
+            r'CNPJ[:\s]*(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}\-?\d{2})',
+            r'(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}\-?\d{2})'
         ]
         
         for pattern in cnpj_patterns:
@@ -80,80 +96,92 @@ class SimpleProposalAnalyzer:
                 data['cnpj'] = match.group(1)
                 break
         
-        # Extrair prazo (buscar por números seguidos de "dias")
+        # Extrair prazo (múltiplos formatos)
         prazo_patterns = [
-            r'(\d+)\s*dias?\s*(?:para|de)?\s*(?:execução|conclusão|prazo)',
-            r'prazo[^:]*?(\d+)\s*dias?',
-            r'execução[^:]*?(\d+)\s*dias?',
-            r'(\d+)\s*dias?\s*corridos'
+            r'(?:prazo|cronograma|execução)[^:]*?(\d+)\s*(?:dias?|meses?)',
+            r'(\d+)\s*(?:dias?|meses?)\s*(?:para|de|corridos|úteis)',
+            r'(?:em|dentro de|até)\s*(\d+)\s*(?:dias?|meses?)',
+            r'vigência[^:]*?(\d+)\s*(?:dias?|meses?)'
         ]
         
         prazos_encontrados = []
         for pattern in prazo_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
-                prazo = int(match)
-                if 10 <= prazo <= 365:  # Filtrar prazos realistas
-                    prazos_encontrados.append(prazo)
+                try:
+                    prazo_num = int(match)
+                    if 1 <= prazo_num <= 730:  # Entre 1 dia e 2 anos
+                        prazos_encontrados.append(prazo_num)
+                except:
+                    continue
         
         if prazos_encontrados:
-            data['prazo_dias'] = max(prazos_encontrados)  # Pegar o maior prazo encontrado
+            prazo_principal = max(prazos_encontrados)
+            data['prazo'] = f"{prazo_principal} dias"
         
-        # Extrair valor (buscar por valores em reais)
+        # Extrair valor
         valor_patterns = [
+            r'(?:valor|preço|total)[^:]*?R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',
             r'R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',
-            r'VALOR[^:]*?R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)',
-            r'TOTAL[^:]*?R\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)'
+            r'(?:proposta|orçamento)[^:]*?(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)'
         ]
         
         for pattern in valor_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                valor_str = match.group(1).replace('.', '').replace(',', '.')
+                valor_str = match.group(1)
                 try:
-                    valor = float(valor_str)
-                    if valor > 1000:  # Filtrar valores muito baixos
-                        data['valor'] = valor
+                    # Converter para float para validar
+                    valor_num = float(valor_str.replace('.', '').replace(',', '.'))
+                    if valor_num > 1000:  # Valor mínimo realista
+                        data['valor'] = f"R$ {valor_str}"
                         break
                 except:
                     continue
         
-        # Extrair equipe (contar pessoas mencionadas)
+        # Extrair equipe
         equipe_patterns = [
-            r'(\d+)\s*(?:pedreiros?|auxiliares?|eletricistas?|operadores?|técnicos?|engenheiros?)',
-            r'equipe[^:]*?(\d+)\s*(?:pessoas?|profissionais?)',
-            r'(\d+)\s*(?:pessoas?|profissionais?|colaboradores?)'
+            r'(?:equipe|pessoal|profissionais)[^:]*?(\d+)\s*(?:pessoas?|profissionais?)',
+            r'(\d+)\s*(?:engenheiros?|técnicos?|operários?|pessoas?)',
+            r'(?:composta por|formada por)[^:]*?(\d+)'
         ]
         
-        total_equipe = 0
+        equipe_total = 0
         for pattern in equipe_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
-                num = int(match)
-                if 1 <= num <= 50:  # Filtrar números realistas
-                    total_equipe += num
+                try:
+                    num = int(match)
+                    if 1 <= num <= 100:
+                        equipe_total += num
+                except:
+                    continue
         
-        data['equipe_total'] = min(total_equipe, 100)  # Limitar a 100 pessoas
+        if equipe_total > 0:
+            data['equipe'] = f"{equipe_total} pessoas"
         
         # Extrair garantia
         garantia_patterns = [
-            r'(\d+)\s*anos?\s*(?:de\s*)?garantia',
-            r'garantia[^:]*?(\d+)\s*anos?',
-            r'(\d+)\s*anos?\s*(?:para\s*)?(?:obras?|serviços?)'
+            r'(?:garantia|warranty)[^:]*?(\d+)\s*(?:anos?|meses?)',
+            r'(\d+)\s*(?:anos?|meses?)\s*(?:de\s*)?garantia'
         ]
         
         for pattern in garantia_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                garantia = int(match.group(1))
-                if 1 <= garantia <= 10:  # Filtrar garantias realistas
-                    data['garantia_anos'] = garantia
-                    break
+                garantia_num = match.group(1)
+                try:
+                    num = int(garantia_num)
+                    if 1 <= num <= 10:
+                        data['garantia'] = f"{num} anos"
+                        break
+                except:
+                    continue
         
         # Extrair telefone
         telefone_patterns = [
-            r'(?:fone|tel|telefone)[:\s]*\(?(\d{2})\)?\s*\d{4,5}[-\.\s]?\d{4}',
-            r'\(?(\d{2})\)?\s*\d{4,5}[-\.\s]?\d{4}'
+            r'(?:tel|fone|telefone)[:\s]*\(?(\d{2})\)?\s*\d{4,5}[\-\.\s]?\d{4}',
+            r'\(?(\d{2})\)?\s*\d{4,5}[\-\.\s]?\d{4}'
         ]
         
         for pattern in telefone_patterns:
@@ -167,78 +195,37 @@ class SimpleProposalAnalyzer:
         if email_match:
             data['email'] = email_match.group(1)
         
-        # Extrair objeto (primeira frase que menciona serviço/obra)
-        objeto_patterns = [
-            r'(?:serviço|obra|objeto)[:\s]*([^\n]+)',
-            r'contratação[^:]*?([^\n]+)',
-            r'execução[^:]*?([^\n]+)'
+        # Extrair endereço (básico)
+        endereco_patterns = [
+            r'(?:endereço|rua|av|avenida)[:\s]*([^,\n]+(?:,\s*[^,\n]+){0,2})',
+            r'(?:cep|CEP)[:\s]*\d{5}[\-\.]?\d{3}[^,\n]*([^,\n]+)'
         ]
         
-        for pattern in objeto_patterns:
+        for pattern in endereco_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                objeto = match.group(1).strip()
-                if len(objeto) > 10:
-                    data['objeto'] = objeto[:100]  # Limitar tamanho
+                endereco = match.group(1).strip()
+                if len(endereco) > 10:
+                    data['endereco'] = endereco[:100]
                     break
         
+        # Observações importantes (palavras-chave)
+        observacoes_keywords = [
+            'metodologia', 'scrum', 'agile', 'kanban', 'certificação', 'iso',
+            'experiência', 'portfolio', 'referências', 'atestado'
+        ]
+        
+        for keyword in observacoes_keywords:
+            if keyword.lower() in text.lower():
+                # Extrair contexto da palavra-chave
+                pattern = rf'.{{0,50}}{keyword}.{{0,50}}'
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    contexto = match.group(0).strip()
+                    if len(contexto) > 10:
+                        data['observacoes'].append(contexto)
+        
         return data
-    
-    def calculate_score(self, data):
-        """Calcula score simples baseado nos dados"""
-        score = 0
-        
-        # Prazo (30 pontos) - quanto menor, melhor
-        if data['prazo_dias'] > 0:
-            if data['prazo_dias'] <= 30:
-                score += 30
-            elif data['prazo_dias'] <= 60:
-                score += 25
-            elif data['prazo_dias'] <= 90:
-                score += 20
-            elif data['prazo_dias'] <= 120:
-                score += 15
-            else:
-                score += 10
-        
-        # Equipe (25 pontos)
-        if data['equipe_total'] > 0:
-            if data['equipe_total'] >= 15:
-                score += 25
-            elif data['equipe_total'] >= 10:
-                score += 20
-            elif data['equipe_total'] >= 5:
-                score += 15
-            else:
-                score += 10
-        
-        # Garantia (20 pontos)
-        if data['garantia_anos'] > 0:
-            if data['garantia_anos'] >= 5:
-                score += 20
-            elif data['garantia_anos'] >= 3:
-                score += 15
-            elif data['garantia_anos'] >= 1:
-                score += 10
-        
-        # Dados completos (25 pontos)
-        completude = 0
-        if data['empresa'] != 'Não identificado':
-            completude += 5
-        if data['cnpj'] != 'Não informado':
-            completude += 5
-        if data['prazo_dias'] > 0:
-            completude += 5
-        if data['equipe_total'] > 0:
-            completude += 5
-        if data['telefone'] != 'Não informado':
-            completude += 2.5
-        if data['email'] != 'Não informado':
-            completude += 2.5
-        
-        score += completude
-        
-        return min(score, 100)
     
     def analyze_proposals(self, files):
         """Analisa múltiplas propostas"""
@@ -250,20 +237,50 @@ class SimpleProposalAnalyzer:
             
             logger.info(f"Analisando: {filename}")
             
-            # Extrair texto
-            text = self.extract_text_from_pdf(file_path)
-            
-            if text:
-                # Extrair dados básicos
-                data = self.extract_basic_data(text, filename)
+            try:
+                # Extrair texto com timeout
+                text = self.extract_text_from_pdf(file_path)
                 
-                # Calcular score
-                data['score'] = self.calculate_score(data)
-                
+                if text and len(text) > 50:
+                    # Extrair dados
+                    data = self.extract_proposal_data(text, filename)
+                    results.append(data)
+                    logger.info(f"Dados extraídos para {filename}: {data['empresa']}")
+                else:
+                    # Criar entrada vazia se não conseguir extrair
+                    data = {
+                        'arquivo': filename,
+                        'empresa': f'Erro na extração - {filename}',
+                        'cnpj': 'Erro na leitura',
+                        'prazo': 'Erro na leitura',
+                        'valor': 'Erro na leitura',
+                        'equipe': 'Erro na leitura',
+                        'garantia': 'Erro na leitura',
+                        'telefone': 'Erro na leitura',
+                        'email': 'Erro na leitura',
+                        'endereco': 'Erro na leitura',
+                        'observacoes': ['Arquivo não pôde ser processado']
+                    }
+                    results.append(data)
+                    logger.warning(f"Falha na extração para: {filename}")
+                    
+            except Exception as e:
+                logger.error(f"Erro no processamento de {filename}: {e}")
+                # Adicionar entrada de erro
+                data = {
+                    'arquivo': filename,
+                    'empresa': f'Erro - {filename}',
+                    'cnpj': 'Erro no processamento',
+                    'prazo': 'Erro no processamento',
+                    'valor': 'Erro no processamento',
+                    'equipe': 'Erro no processamento',
+                    'garantia': 'Erro no processamento',
+                    'telefone': 'Erro no processamento',
+                    'email': 'Erro no processamento',
+                    'endereco': 'Erro no processamento',
+                    'observacoes': [f'Erro: {str(e)}']
+                }
                 results.append(data)
-                logger.info(f"Dados extraídos para {filename}: {data['empresa']}")
-            else:
-                logger.error(f"Falha na extração para: {filename}")
         
         return results
     
@@ -277,8 +294,8 @@ class SimpleProposalAnalyzer:
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Title'],
-            fontSize=20,
-            spaceAfter=30,
+            fontSize=18,
+            spaceAfter=20,
             textColor=colors.darkblue,
             alignment=TA_CENTER
         )
@@ -286,126 +303,130 @@ class SimpleProposalAnalyzer:
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
-            fontSize=14,
-            spaceAfter=15,
+            fontSize=12,
+            spaceAfter=10,
             textColor=colors.darkblue
         )
         
         # Título
-        story.append(Paragraph("ANÁLISE COMPARATIVA DE PROPOSTAS", title_style))
+        story.append(Paragraph("COMPARAÇÃO DETALHADA DE PROPOSTAS", title_style))
         story.append(Paragraph(f"Relatório gerado em: {datetime.now().strftime('%d/%m/%Y às %H:%M')}", styles['Normal']))
-        story.append(Spacer(1, 30))
+        story.append(Spacer(1, 20))
         
-        # Ranking geral
-        story.append(Paragraph("1. RANKING GERAL", heading_style))
+        if not proposals:
+            story.append(Paragraph("Nenhuma proposta foi processada com sucesso.", styles['Normal']))
+            doc.build(story)
+            return output_path
         
-        # Ordenar por score
-        sorted_proposals = sorted(proposals, key=lambda x: x['score'], reverse=True)
+        # Tabela comparativa principal
+        story.append(Paragraph("TABELA COMPARATIVA", heading_style))
         
-        # Tabela de ranking
-        ranking_data = [['Pos.', 'Empresa', 'Score', 'Prazo', 'Equipe', 'Garantia']]
+        # Preparar dados da tabela
+        table_data = [['Critério'] + [f"Proposta {i+1}" for i in range(len(proposals))]]
         
-        for i, prop in enumerate(sorted_proposals, 1):
-            empresa_nome = prop['empresa'][:25] + '...' if len(prop['empresa']) > 25 else prop['empresa']
-            prazo_str = f"{prop['prazo_dias']} dias" if prop['prazo_dias'] > 0 else 'N/I'
-            equipe_str = f"{prop['equipe_total']} pessoas" if prop['equipe_total'] > 0 else 'N/I'
-            garantia_str = f"{prop['garantia_anos']} anos" if prop['garantia_anos'] > 0 else 'N/I'
-            
-            ranking_data.append([
-                f"{i}º",
-                empresa_nome,
-                f"{prop['score']:.0f}%",
-                prazo_str,
-                equipe_str,
-                garantia_str
-            ])
+        # Adicionar linhas de dados
+        criterios = [
+            ('Empresa', 'empresa'),
+            ('CNPJ', 'cnpj'),
+            ('Prazo', 'prazo'),
+            ('Valor', 'valor'),
+            ('Equipe', 'equipe'),
+            ('Garantia', 'garantia'),
+            ('Telefone', 'telefone'),
+            ('Email', 'email'),
+            ('Endereço', 'endereco')
+        ]
         
-        ranking_table = Table(ranking_data, colWidths=[0.5*inch, 2.5*inch, 0.8*inch, 1*inch, 1*inch, 0.8*inch])
-        ranking_table.setStyle(TableStyle([
+        for criterio_nome, criterio_key in criterios:
+            row = [criterio_nome]
+            for prop in proposals:
+                valor = prop.get(criterio_key, 'N/I')
+                # Limitar tamanho do texto na tabela
+                if len(str(valor)) > 25:
+                    valor = str(valor)[:22] + '...'
+                row.append(str(valor))
+            table_data.append(row)
+        
+        # Criar tabela
+        col_widths = [1.2*inch] + [1.8*inch] * len(proposals)
+        comparison_table = Table(table_data, colWidths=col_widths)
+        
+        # Estilo da tabela
+        table_style = [
             ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('BACKGROUND', (0, 1), (0, -1), colors.lightblue),
             ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
-        ]))
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ]
         
-        story.append(ranking_table)
+        # Alternar cores das linhas
+        for i in range(1, len(table_data)):
+            if i % 2 == 0:
+                table_style.append(('BACKGROUND', (1, i), (-1, i), colors.lightgrey))
+        
+        comparison_table.setStyle(TableStyle(table_style))
+        story.append(comparison_table)
         story.append(Spacer(1, 30))
         
-        # Detalhes por empresa
-        story.append(Paragraph("2. DETALHES POR EMPRESA", heading_style))
+        # Detalhes individuais
+        story.append(Paragraph("DETALHES POR PROPOSTA", heading_style))
         
-        for i, prop in enumerate(sorted_proposals):
-            # Nome da empresa
-            story.append(Paragraph(f"{i+1}º LUGAR: {prop['empresa']}", 
-                                 ParagraphStyle('CompanyTitle', parent=styles['Heading3'], 
-                                              textColor=colors.darkgreen, fontSize=12)))
+        for i, prop in enumerate(proposals, 1):
+            # Título da proposta
+            story.append(Paragraph(f"PROPOSTA {i}: {prop['empresa']}", 
+                                 ParagraphStyle('PropTitle', parent=styles['Heading3'], 
+                                              textColor=colors.darkgreen, fontSize=11)))
             
-            # Tabela de detalhes
-            details_data = [
-                ['Informação', 'Valor'],
-                ['CNPJ', prop['cnpj']],
-                ['Telefone', prop['telefone']],
-                ['Email', prop['email']],
-                ['Prazo de Execução', f"{prop['prazo_dias']} dias" if prop['prazo_dias'] > 0 else 'Não informado'],
-                ['Equipe Total', f"{prop['equipe_total']} pessoas" if prop['equipe_total'] > 0 else 'Não informado'],
-                ['Garantia', f"{prop['garantia_anos']} anos" if prop['garantia_anos'] > 0 else 'Não informado'],
-                ['Valor Proposto', f"R$ {prop['valor']:,.2f}" if prop['valor'] > 0 else 'Não informado'],
-                ['Score Final', f"{prop['score']:.0f}%"]
-            ]
+            # Informações básicas
+            info_text = f"""
+            <b>Arquivo:</b> {prop['arquivo']}<br/>
+            <b>CNPJ:</b> {prop['cnpj']}<br/>
+            <b>Telefone:</b> {prop['telefone']}<br/>
+            <b>Email:</b> {prop['email']}<br/>
+            <b>Endereço:</b> {prop['endereco']}<br/>
+            <b>Prazo:</b> {prop['prazo']}<br/>
+            <b>Valor:</b> {prop['valor']}<br/>
+            <b>Equipe:</b> {prop['equipe']}<br/>
+            <b>Garantia:</b> {prop['garantia']}
+            """
             
-            if prop['objeto'] != 'Não identificado':
-                details_data.insert(-1, ['Objeto', prop['objeto'][:60] + '...' if len(prop['objeto']) > 60 else prop['objeto']])
+            story.append(Paragraph(info_text, styles['Normal']))
             
-            details_table = Table(details_data, colWidths=[2*inch, 3.5*inch])
-            details_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-                ('BACKGROUND', (0, -1), (-1, -1), colors.lightgreen)  # Destacar score
-            ]))
+            # Observações
+            if prop['observacoes']:
+                story.append(Paragraph("<b>Observações:</b>", styles['Heading4']))
+                for obs in prop['observacoes'][:3]:  # Limitar a 3 observações
+                    story.append(Paragraph(f"• {obs}", styles['Normal']))
             
-            story.append(details_table)
-            story.append(Spacer(1, 20))
+            story.append(Spacer(1, 15))
         
-        # Recomendação
-        story.append(Paragraph("3. RECOMENDAÇÃO", heading_style))
+        # Resumo final
+        story.append(Paragraph("RESUMO PARA ANÁLISE", heading_style))
         
-        if sorted_proposals:
-            melhor = sorted_proposals[0]
-            story.append(Paragraph(f"Recomenda-se a contratação da empresa {melhor['empresa']} que obteve o melhor score geral ({melhor['score']:.0f}%).", styles['Normal']))
-            story.append(Spacer(1, 10))
-            
-            # Justificativa
-            justificativas = []
-            if melhor['prazo_dias'] > 0:
-                justificativas.append(f"• Prazo adequado: {melhor['prazo_dias']} dias")
-            if melhor['equipe_total'] > 0:
-                justificativas.append(f"• Equipe dimensionada: {melhor['equipe_total']} pessoas")
-            if melhor['garantia_anos'] > 0:
-                justificativas.append(f"• Garantia oferecida: {melhor['garantia_anos']} anos")
-            if melhor['valor'] > 0:
-                justificativas.append(f"• Valor proposto: R$ {melhor['valor']:,.2f}")
-            
-            if justificativas:
-                story.append(Paragraph("Principais fatores:", styles['Heading4']))
-                for just in justificativas:
-                    story.append(Paragraph(just, styles['Normal']))
+        resumo_text = f"""
+        Este relatório apresenta a comparação detalhada de {len(proposals)} propostas recebidas.
+        Os dados foram extraídos automaticamente dos documentos enviados.
+        
+        <b>Próximos passos sugeridos:</b><br/>
+        1. Verificar a completude dos dados extraídos<br/>
+        2. Analisar os critérios mais importantes para sua decisão<br/>
+        3. Solicitar esclarecimentos às empresas, se necessário<br/>
+        4. Tomar decisão baseada nos critérios estabelecidos
+        """
+        
+        story.append(Paragraph(resumo_text, styles['Normal']))
         
         # Gerar PDF
         doc.build(story)
         return output_path
 
-# Instanciar analisador
-analyzer = SimpleProposalAnalyzer()
+# Instanciar comparador
+comparator = ProposalComparator()
 
 @app.route('/')
 def index():
@@ -416,8 +437,8 @@ def upload_files():
     try:
         files = request.files.getlist('files')
         
-        if not files or len(files) < 2:
-            return jsonify({'error': 'É necessário enviar pelo menos 2 arquivos'}), 400
+        if not files or len(files) < 1:
+            return jsonify({'error': 'É necessário enviar pelo menos 1 arquivo'}), 400
         
         logger.info(f"Processando {len(files)} arquivos")
         
@@ -439,15 +460,15 @@ def upload_files():
                 })
         
         # Analisar propostas
-        proposals = analyzer.analyze_proposals(temp_files)
+        proposals = comparator.analyze_proposals(temp_files)
         
         if not proposals:
             return jsonify({'error': 'Falha na análise das propostas'}), 500
         
         # Gerar relatório
-        report_filename = f"analise_comparativa_{timestamp}.pdf"
+        report_filename = f"comparacao_propostas_{timestamp}.pdf"
         report_path = os.path.join(upload_dir, report_filename)
-        analyzer.generate_comparison_report(proposals, report_path)
+        comparator.generate_comparison_report(proposals, report_path)
         
         logger.info(f"Relatório gerado: {report_path}")
         
@@ -456,8 +477,7 @@ def upload_files():
             'report_url': f'/download/{report_filename}',
             'proposals_count': len(proposals),
             'summary': {
-                'melhor_empresa': proposals[0]['empresa'] if proposals else 'N/A',
-                'melhor_score': proposals[0]['score'] if proposals else 0
+                'empresas': [p['empresa'] for p in proposals[:3]]  # Primeiras 3 empresas
             }
         })
         
@@ -477,14 +497,14 @@ def download_file(filename):
         logger.error(f"Erro no download: {e}")
         return jsonify({'error': 'Erro no download'}), 500
 
-# Template HTML simplificado
+# Template HTML ultra-simplificado
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Arias Analyzer Pro - Versão Simplificada</title>
+    <title>Comparador de Propostas - Simples e Funcional</title>
     <style>
         * {
             margin: 0;
@@ -494,7 +514,7 @@ HTML_TEMPLATE = '''
         
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -504,8 +524,8 @@ HTML_TEMPLATE = '''
         
         .container {
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            border-radius: 15px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.1);
             padding: 40px;
             max-width: 600px;
             width: 100%;
@@ -513,63 +533,83 @@ HTML_TEMPLATE = '''
         }
         
         .logo {
-            font-size: 2.5em;
+            font-size: 2.2em;
             font-weight: bold;
-            color: #667eea;
+            color: #2c3e50;
             margin-bottom: 10px;
         }
         
         .subtitle {
-            color: #666;
+            color: #7f8c8d;
             margin-bottom: 30px;
             font-size: 1.1em;
         }
         
-        .version-badge {
-            background: #28a745;
-            color: white;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.9em;
-            margin-bottom: 20px;
-            display: inline-block;
+        .features {
+            background: #ecf0f1;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        
+        .features h3 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        
+        .features ul {
+            list-style: none;
+            padding: 0;
+        }
+        
+        .features li {
+            padding: 5px 0;
+            color: #34495e;
+        }
+        
+        .features li:before {
+            content: "✓ ";
+            color: #27ae60;
+            font-weight: bold;
         }
         
         .upload-area {
-            border: 3px dashed #667eea;
+            border: 3px dashed #3498db;
             border-radius: 15px;
             padding: 40px 20px;
             margin: 30px 0;
-            background: #f8f9ff;
+            background: #f8f9fa;
             transition: all 0.3s ease;
             cursor: pointer;
         }
         
         .upload-area:hover {
-            border-color: #764ba2;
-            background: #f0f2ff;
+            border-color: #2980b9;
+            background: #e3f2fd;
         }
         
         .upload-area.dragover {
-            border-color: #764ba2;
-            background: #e8ebff;
+            border-color: #2980b9;
+            background: #bbdefb;
             transform: scale(1.02);
         }
         
         .upload-icon {
             font-size: 3em;
-            color: #667eea;
+            color: #3498db;
             margin-bottom: 15px;
         }
         
         .upload-text {
-            color: #333;
+            color: #2c3e50;
             font-size: 1.1em;
             margin-bottom: 10px;
         }
         
         .upload-hint {
-            color: #666;
+            color: #7f8c8d;
             font-size: 0.9em;
         }
         
@@ -577,8 +617,8 @@ HTML_TEMPLATE = '''
             display: none;
         }
         
-        .analyze-btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        .compare-btn {
+            background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
             color: white;
             border: none;
             padding: 15px 40px;
@@ -592,13 +632,13 @@ HTML_TEMPLATE = '''
             max-width: 300px;
         }
         
-        .analyze-btn:hover {
+        .compare-btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+            box-shadow: 0 10px 20px rgba(52, 152, 219, 0.3);
         }
         
-        .analyze-btn:disabled {
-            background: #ccc;
+        .compare-btn:disabled {
+            background: #bdc3c7;
             cursor: not-allowed;
             transform: none;
             box-shadow: none;
@@ -610,7 +650,7 @@ HTML_TEMPLATE = '''
         }
         
         .file-item {
-            background: #f0f2ff;
+            background: #ecf0f1;
             padding: 10px 15px;
             margin: 5px 0;
             border-radius: 8px;
@@ -620,12 +660,12 @@ HTML_TEMPLATE = '''
         }
         
         .file-name {
-            color: #333;
+            color: #2c3e50;
             font-weight: 500;
         }
         
         .file-size {
-            color: #666;
+            color: #7f8c8d;
             font-size: 0.9em;
         }
         
@@ -637,21 +677,21 @@ HTML_TEMPLATE = '''
         .progress-bar {
             width: 100%;
             height: 20px;
-            background: #f0f0f0;
+            background: #ecf0f1;
             border-radius: 10px;
             overflow: hidden;
         }
         
         .progress-fill {
             height: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
             width: 0%;
             transition: width 0.3s ease;
         }
         
         .progress-text {
             margin-top: 10px;
-            color: #666;
+            color: #7f8c8d;
         }
         
         .result-container {
@@ -660,15 +700,15 @@ HTML_TEMPLATE = '''
         }
         
         .success-message {
-            background: #d4edda;
-            color: #155724;
+            background: #d5f4e6;
+            color: #27ae60;
             padding: 15px;
             border-radius: 10px;
             margin-bottom: 20px;
         }
         
         .download-btn {
-            background: #28a745;
+            background: #27ae60;
             color: white;
             border: none;
             padding: 12px 30px;
@@ -682,47 +722,18 @@ HTML_TEMPLATE = '''
         }
         
         .download-btn:hover {
-            background: #218838;
+            background: #229954;
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(40, 167, 69, 0.3);
+            box-shadow: 0 5px 15px rgba(39, 174, 96, 0.3);
         }
         
         .error-message {
-            background: #f8d7da;
-            color: #721c24;
+            background: #fadbd8;
+            color: #e74c3c;
             padding: 15px;
             border-radius: 10px;
             margin-top: 20px;
             display: none;
-        }
-        
-        .features {
-            background: #f8f9ff;
-            padding: 20px;
-            border-radius: 10px;
-            margin: 20px 0;
-            text-align: left;
-        }
-        
-        .features h3 {
-            color: #667eea;
-            margin-bottom: 10px;
-        }
-        
-        .features ul {
-            list-style: none;
-            padding: 0;
-        }
-        
-        .features li {
-            padding: 5px 0;
-            color: #333;
-        }
-        
-        .features li:before {
-            content: "✓ ";
-            color: #28a745;
-            font-weight: bold;
         }
         
         @media (max-width: 768px) {
@@ -732,40 +743,40 @@ HTML_TEMPLATE = '''
             }
             
             .logo {
-                font-size: 2em;
+                font-size: 1.8em;
             }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="logo">📊 Arias Analyzer Pro</div>
-        <div class="version-badge">Versão Simplificada</div>
-        <div class="subtitle">Sistema Funcional e Confiável</div>
+        <div class="logo">📊 Comparador de Propostas</div>
+        <div class="subtitle">Ferramenta Simples e Funcional</div>
         
         <div class="features">
-            <h3>✨ Características desta versão:</h3>
+            <h3>🎯 O que esta ferramenta faz:</h3>
             <ul>
-                <li>Extração confiável com PyPDF2</li>
-                <li>Análise de dados essenciais</li>
-                <li>Relatório comparativo direto</li>
-                <li>Ranking automático por score</li>
-                <li>Funciona sempre, sem falhas</li>
+                <li>Extrai dados básicos de cada proposta</li>
+                <li>Organiza informações em tabela comparativa</li>
+                <li>Apresenta detalhes de cada empresa</li>
+                <li>Gera relatório PDF para análise</li>
+                <li>Funciona com qualquer quantidade de propostas</li>
+                <li>Sem scores automáticos - você decide</li>
             </ul>
         </div>
         
         <div class="upload-area" onclick="document.getElementById('fileInput').click()">
             <div class="upload-icon">📁</div>
-            <div class="upload-text">Clique aqui ou arraste os arquivos</div>
-            <div class="upload-hint">Aceita apenas PDF (mínimo 2 arquivos)</div>
+            <div class="upload-text">Clique aqui ou arraste as propostas</div>
+            <div class="upload-hint">Aceita apenas PDF (mínimo 1 arquivo)</div>
         </div>
         
         <input type="file" id="fileInput" class="file-input" multiple accept=".pdf">
         
         <div class="file-list" id="fileList"></div>
         
-        <button class="analyze-btn" id="analyzeBtn" onclick="analyzeFiles()" disabled>
-            Analisar e Comparar Propostas
+        <button class="compare-btn" id="compareBtn" onclick="compareProposals()" disabled>
+            Comparar Propostas
         </button>
         
         <div class="progress-container" id="progressContainer">
@@ -777,7 +788,7 @@ HTML_TEMPLATE = '''
         
         <div class="result-container" id="resultContainer">
             <div class="success-message" id="successMessage"></div>
-            <a href="#" class="download-btn" id="downloadBtn">📥 Baixar Relatório Comparativo</a>
+            <a href="#" class="download-btn" id="downloadBtn">📥 Baixar Comparação</a>
         </div>
         
         <div class="error-message" id="errorMessage"></div>
@@ -788,7 +799,7 @@ HTML_TEMPLATE = '''
         
         const fileInput = document.getElementById('fileInput');
         const fileList = document.getElementById('fileList');
-        const analyzeBtn = document.getElementById('analyzeBtn');
+        const compareBtn = document.getElementById('compareBtn');
         const uploadArea = document.querySelector('.upload-area');
         
         // Drag and drop
@@ -821,7 +832,7 @@ HTML_TEMPLATE = '''
             
             selectedFiles = validFiles;
             updateFileList();
-            updateAnalyzeButton();
+            updateCompareButton();
         }
         
         function updateFileList() {
@@ -837,13 +848,13 @@ HTML_TEMPLATE = '''
             });
         }
         
-        function updateAnalyzeButton() {
-            analyzeBtn.disabled = selectedFiles.length < 2;
+        function updateCompareButton() {
+            compareBtn.disabled = selectedFiles.length < 1;
         }
         
-        async function analyzeFiles() {
-            if (selectedFiles.length < 2) {
-                showError('É necessário selecionar pelo menos 2 arquivos PDF.');
+        async function compareProposals() {
+            if (selectedFiles.length < 1) {
+                showError('É necessário selecionar pelo menos 1 arquivo PDF.');
                 return;
             }
             
@@ -851,15 +862,15 @@ HTML_TEMPLATE = '''
             document.getElementById('progressContainer').style.display = 'block';
             document.getElementById('resultContainer').style.display = 'none';
             document.getElementById('errorMessage').style.display = 'none';
-            analyzeBtn.disabled = true;
+            compareBtn.disabled = true;
             
             // Simular progresso
             let progress = 0;
             const progressInterval = setInterval(() => {
-                progress += Math.random() * 20;
-                if (progress > 90) progress = 90;
+                progress += Math.random() * 15;
+                if (progress > 85) progress = 85;
                 updateProgress(progress, 'Extraindo dados das propostas...');
-            }, 300);
+            }, 500);
             
             try {
                 const formData = new FormData();
@@ -873,7 +884,7 @@ HTML_TEMPLATE = '''
                 });
                 
                 clearInterval(progressInterval);
-                updateProgress(100, 'Análise concluída!');
+                updateProgress(100, 'Comparação concluída!');
                 
                 const result = await response.json();
                 
@@ -886,7 +897,7 @@ HTML_TEMPLATE = '''
                 clearInterval(progressInterval);
                 showError('Erro de conexão: ' + error.message);
             } finally {
-                analyzeBtn.disabled = false;
+                compareBtn.disabled = false;
                 setTimeout(() => {
                     document.getElementById('progressContainer').style.display = 'none';
                 }, 2000);
@@ -904,9 +915,9 @@ HTML_TEMPLATE = '''
             const resultContainer = document.getElementById('resultContainer');
             
             successMessage.innerHTML = `
-                ✅ Análise comparativa concluída com sucesso!<br>
-                📊 ${result.proposals_count} propostas analisadas<br>
-                🏆 Melhor empresa: ${result.summary.melhor_empresa} (${result.summary.melhor_score.toFixed(0)}% score)
+                ✅ Comparação concluída com sucesso!<br>
+                📊 ${result.proposals_count} propostas processadas<br>
+                📋 Empresas: ${result.summary.empresas.join(', ')}
             `;
             
             downloadBtn.href = result.report_url;
