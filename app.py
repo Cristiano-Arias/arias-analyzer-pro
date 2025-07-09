@@ -1,101 +1,45 @@
-from flask import Flask, render_template_string, request, send_file
-from flask_cors import CORS
-import os
+from flask import Flask, render_template, request, send_file
+from werkzeug.utils import secure_filename
 from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+from datetime import datetime
+import os
 
 app = Flask(__name__)
-CORS(app)
-
-# Diretório para uploads
-UPLOAD_FOLDER = 'uploads'
+UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# HTML mínimo
-HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Arias Analyzer Pro</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            padding: 2rem;
-            background: #f4f4f4;
-        }
-        h1 {
-            color: #333;
-        }
-        form {
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-        }
-        input[type=file], input[type=submit] {
-            display: block;
-            margin: 1rem 0;
-        }
-    </style>
-</head>
-<body>
-    <h1>Proposal Analyzer by Arias</h1>
-    <form method="post" enctype="multipart/form-data">
-        <label for="file">Selecione um arquivo para análise:</label>
-        <input type="file" name="file" required>
-        <input type="submit" value="Analisar">
-    </form>
-</body>
-</html>
-"""
-
-# Função para gerar relatório Word
-def gerar_relatorio_word(nome_arquivo_analisado, resultado_analise, nome_arquivo_saida):
-    document = Document()
-
-    # Título
-    titulo = document.add_heading('Relatório de Análise - Proposal Analyzer by Arias', level=1)
-    titulo.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-
-    # Arquivo analisado
-    par_arquivo = document.add_paragraph()
-    par_arquivo.add_run('Arquivo analisado: ').bold = True
-    par_arquivo.add_run(nome_arquivo_analisado)
-
-    document.add_paragraph('')
-
-    # Resultado
-    subtitulo = document.add_paragraph()
-    subtitulo.add_run('Resultado da Análise:').bold = True
-
-    for item in resultado_analise.split('\n'):
-        document.add_paragraph(item, style='Normal')
-
-    document.save(nome_arquivo_saida)
-
-# Página principal
-@app.route('/', methods=['GET', 'POST'])
+@app.route("/")
 def index():
-    if request.method == 'POST':
-        uploaded_file = request.files['file']
-        if uploaded_file.filename != '':
-            path = os.path.join(UPLOAD_FOLDER, uploaded_file.filename)
-            uploaded_file.save(path)
+    return render_template("index.html")
 
-            # Simulação de resultado da análise
-            resultado_analise = (
-                "• Documento bem estruturado.\n"
-                "• Ausência de inconsistências formais.\n"
-                "• Conformidade com o Termo de Referência.\n"
-                "• Sugestão: incluir cronograma de entrega."
-            )
+@app.route("/analisar", methods=["POST"])
+def analisar():
+    if "arquivo" not in request.files:
+        return "Nenhum arquivo enviado.", 400
 
-            output_path = os.path.join(UPLOAD_FOLDER, 'relatorio_analise.docx')
-            gerar_relatorio_word(uploaded_file.filename, resultado_analise, output_path)
+    arquivo = request.files["arquivo"]
+    if arquivo.filename == "":
+        return "Nome de arquivo inválido.", 400
 
-            return send_file(output_path, as_attachment=True)
+    nome_seguro = secure_filename(arquivo.filename)
+    caminho_arquivo = os.path.join(UPLOAD_FOLDER, nome_seguro)
+    arquivo.save(caminho_arquivo)
 
-    return render_template_string(HTML)
+    # Criação do relatório
+    doc = Document()
+    doc.add_heading("Relatório de Análise - Proposal Analyzer by Arias", 0)
+    doc.add_paragraph(f"Arquivo analisado: {arquivo.filename}")
+    doc.add_paragraph(f"\nResultado da Análise:", style='List Bullet')
+    doc.add_paragraph("• Documento bem estruturado.")
+    doc.add_paragraph("• Ausência de inconsistências formais.")
+    doc.add_paragraph("• Conformidade com o Termo de Referência.")
+    doc.add_paragraph("• Sugestão: incluir cronograma de entrega.")
+    
+    nome_relatorio = f"relatorio_analise_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+    caminho_relatorio = os.path.join(UPLOAD_FOLDER, nome_relatorio)
+    doc.save(caminho_relatorio)
 
-if __name__ == '__main__':
+    return send_file(caminho_relatorio, as_attachment=True)
+
+if __name__ == "__main__":
     app.run(debug=True)
