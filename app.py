@@ -38,4 +38,4 @@ def download_report():
 
 if __name__ == '__main__':
     app.run(debug=True)
-Atualiza app.py com upload e geração de relatório Word
+
