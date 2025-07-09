@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <title>Proposal Analyzer by Arias</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; padding: 40px; background-color: #f9f9f9; }
+        h1 { color: #1a1a1a; }
+        form { background: white; padding: 20px; border-radius: 8px; display: inline-block; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        input[type=file], input[type=submit] { margin-top: 20px; }
+    </style>
+</head>
+<body>
+    <h1>Proposal Analyzer by Arias</h1>
+    <form action="/analisar" method="post" enctype="multipart/form-data">
+        <label for="arquivo">Selecione a proposta técnica (.pdf):</label><br>
+        <input type="file" name="arquivo" id="arquivo" required><br>
+        <input type="submit" value="Analisar">
+    </form>
+</body>
+</html>
