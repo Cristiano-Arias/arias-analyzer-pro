@@ -1,0 +1,24 @@
+databases:
+  - name: concorrencia-db
+    plan: starter
+    
+services:
+  - type: web
+    name: concorrencia-api
+    runtime: python
+    envVars:
+      - key: SECRET_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: concorrencia-db
+          property: connectionString
+    buildCommand: pip install -r requirements.txt
+    # A aplicação é executada diretamente via ``python run.py`` para evitar o
+    # uso de eventlet, que não é compatível com Python 3.13.  O módulo
+    # ``run.py`` expõe a função socketio.run(), que lê a variável de ambiente
+    # PORT e inicia a aplicação na porta correta.
+    startCommand: python run.py
+    autoDeploy: true
