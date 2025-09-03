@@ -46,4 +46,14 @@ if __name__ == "__main__":
     # ambiente (por ex. Render) se disponível; caso contrário, utilize 5000.
     import os
     port = int(os.environ.get("PORT", 5000))
-    socketio.run(application, host="0.0.0.0", port=port, debug=False)
+    socketio.run(
+        application,
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        # O servidor integrado Werkzeug não é recomendado para produção, mas
+        # ao utilizar o modo 'threading' esta é a opção suportada.  Passamos
+        # explicitamente ``allow_unsafe_werkzeug=True`` para suprimir a
+        # exceção lançada pelo Flask-SocketIO em ambientes de produção.
+        allow_unsafe_werkzeug=True,
+    )
