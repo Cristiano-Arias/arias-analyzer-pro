@@ -10,8 +10,11 @@ from .config import Config
 db = SQLAlchemy()
 jwt = JWTManager()
 
-# SocketIO: eventlet/gevent supported; fall back to threading if not installed
-socketio = SocketIO(cors_allowed_origins="*", async_mode='eventlet')
+# SocketIO initialization: use Python's threading mode by default.  Eventlet
+# isn't compatible with Python 3.13 at this time, and using threading avoids
+# dependency on a green‑thread implementation.  This mode provides
+# acceptable performance for moderate loads and full WebSocket support.
+socketio = SocketIO(cors_allowed_origins="*", async_mode='threading')
 
 
 def create_app() -> Flask:
@@ -25,7 +28,10 @@ def create_app() -> Flask:
     CORS(app)  # allow cross-origin for MVP
     db.init_app(app)
     jwt.init_app(app)
-    socketio.init_app(app, cors_allowed_origins="*", async_mode='eventlet')
+    # Inicialize o SocketIO para esta instância de app.  Não especifique
+    # explicitamente 'eventlet' aqui; deixe o ``async_mode`` herdado do
+    # objeto global ``socketio`` (que foi configurado para 'threading').
+    socketio.init_app(app, cors_allowed_origins="*")
 
     with app.app_context():
         from . import models  # noqa: F401
