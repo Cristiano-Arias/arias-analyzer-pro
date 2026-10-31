@@ -1,0 +1,12 @@
+{
+  "name": "garagem360",
+  "private": true,
+  "description": "Plataforma de gestão automotiva e veicular (nome provisório)",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:db": "./db/run-tests.sh"
+  },
+  "engines": { "node": ">=22" }
+}
